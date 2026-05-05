@@ -1,0 +1,44 @@
+spring:
+  application:
+    name: agenticcrawl
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/agenticcrawl}
+    username: ${SPRING_DATASOURCE_USERNAME:agenticcrawl}
+    password: ${SPRING_DATASOURCE_PASSWORD:agenticcrawl}
+  jpa:
+    hibernate:
+      ddl-auto: update
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+  ai:
+    openai:
+      api-key: ${OPENAI_API_KEY:}
+      chat:
+        options:
+          model: gpt-4o
+          temperature: 0.2
+
+server:
+  port: 8080
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: when_authorized
+
+agenticcrawl:
+  cors:
+    allowed-origins:
+      - http://localhost:5173
+      - http://localhost:3000
+
+logging:
+  level:
+    org.springframework.ai: INFO
+    com.microsoft.playwright: INFO
