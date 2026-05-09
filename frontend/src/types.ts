@@ -7,12 +7,18 @@ export interface Validation {
   reasoning: string;
 }
 
+export interface Example {
+  containerType: string;
+  fields: Record<string, string>;
+}
+
 export interface Job {
   id: string;
   description: string;
   url: string;
   status: JobStatus;
   validation: Validation | null;
+  example: Example | null;
   errorMessage: string | null;
   hasScreenshot: boolean;
   createdAt: string;

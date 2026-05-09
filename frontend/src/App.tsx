@@ -13,7 +13,7 @@ export function App() {
   const isTerminal = job?.status === "SUCCEEDED" || job?.status === "FAILED";
 
   useEffect(() => {
-    if (!job || isTerminal) return;
+    if (!job?.id || isTerminal) return;
     const interval = setInterval(async () => {
       try {
         const fresh = await fetchJob(job.id);
@@ -23,7 +23,7 @@ export function App() {
       }
     }, 1000);
     return () => clearInterval(interval);
-  }, [job, isTerminal]);
+  }, [job?.id, isTerminal]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -98,6 +98,8 @@ export function App() {
 }
 
 function JobView({ job }: { job: Job }) {
+  const isAbsent = job.validation?.verdict === "ABSENT";
+
   return (
     <section className="job-view">
       <div className="job-header">
@@ -115,8 +117,16 @@ function JobView({ job }: { job: Job }) {
         <div className={`verdict verdict-${job.validation.verdict.toLowerCase()}`}>
           <h3>Verdict: {job.validation.verdict}</h3>
           <p>{job.validation.reasoning}</p>
+          {isAbsent && (
+            <p className="muted">
+              No example was extracted because the page does not contain the
+              requested content.
+            </p>
+          )}
         </div>
       )}
+
+      {job.example && <ExampleBlock example={job.example} />}
 
       {job.hasScreenshot && (
         <div className="screenshot">
@@ -125,5 +135,27 @@ function JobView({ job }: { job: Job }) {
         </div>
       )}
     </section>
+  );
+}
+
+function ExampleBlock({ example }: { example: NonNullable<Job["example"]> }) {
+  const entries = Object.entries(example.fields);
+  return (
+    <div className="example">
+      <h3>Example</h3>
+      <div className="example-container-type">{example.containerType}</div>
+      {entries.length > 0 && (
+        <table className="example-fields">
+          <tbody>
+            {entries.map(([name, value]) => (
+              <tr key={name}>
+                <th>{name}</th>
+                <td>{value}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
   );
 }

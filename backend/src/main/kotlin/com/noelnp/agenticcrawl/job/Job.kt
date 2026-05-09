@@ -1,6 +1,6 @@
 package com.noelnp.agenticcrawl.job
 
-import com.noelnp.agenticcrawl.validation.ValidationVerdict
+import com.noelnp.agenticcrawl.analysis.ValidationVerdict
 import jakarta.persistence.Column
 import jakarta.persistence.Entity
 import jakarta.persistence.EnumType
@@ -43,6 +43,12 @@ class Job(
 
     @Column(name = "validation_reasoning", columnDefinition = "TEXT")
     var validationReasoning: String? = null
+
+    @Column(name = "example_container_type", columnDefinition = "TEXT")
+    var exampleContainerType: String? = null
+
+    @Column(name = "example_fields_json", columnDefinition = "TEXT")
+    var exampleFieldsJson: String? = null
 
     @Column(name = "error_message", columnDefinition = "TEXT")
     var errorMessage: String? = null

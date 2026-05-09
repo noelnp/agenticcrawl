@@ -1,4 +1,4 @@
-package com.noelnp.agenticcrawl.validation
+package com.noelnp.agenticcrawl.analysis
 
 enum class ValidationVerdict {
     PRESENT,

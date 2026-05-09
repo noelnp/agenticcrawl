@@ -173,6 +173,63 @@ button.secondary {
   border-color: #5a2d2d;
 }
 
+.example {
+  background: #1a1d24;
+  border: 1px solid #262b34;
+  border-radius: 12px;
+  padding: 1rem 1.25rem;
+}
+
+.example h3 {
+  margin: 0 0 0.4rem;
+  font-size: 1rem;
+}
+
+.example-container-type {
+  font-size: 0.85rem;
+  color: #9aa1ac;
+  margin-bottom: 0.75rem;
+  letter-spacing: 0.02em;
+  text-transform: lowercase;
+}
+
+.example-fields {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.example-fields tr {
+  border-top: 1px solid #262b34;
+}
+
+.example-fields tr:first-child {
+  border-top: none;
+}
+
+.example-fields th {
+  text-align: left;
+  font-weight: 500;
+  color: #9aa1ac;
+  padding: 0.45rem 0.75rem 0.45rem 0;
+  width: 35%;
+  vertical-align: top;
+}
+
+.example-fields td {
+  padding: 0.45rem 0;
+  color: #e8eaed;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 0.85rem;
+  word-break: break-word;
+}
+
+.muted {
+  color: #9aa1ac;
+  font-size: 0.85rem;
+  margin-top: 0.6rem;
+}
+
 .screenshot {
   background: #1a1d24;
   border: 1px solid #262b34;

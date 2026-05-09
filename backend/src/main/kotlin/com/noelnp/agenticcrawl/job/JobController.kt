@@ -1,5 +1,6 @@
 package com.noelnp.agenticcrawl.job
 
+import com.fasterxml.jackson.databind.ObjectMapper
 import jakarta.validation.Valid
 import org.springframework.http.HttpStatus
 import org.springframework.http.MediaType
@@ -17,12 +18,15 @@ import java.util.UUID
 
 @RestController
 @RequestMapping("/api/jobs")
-class JobController(private val jobService: JobService) {
+class JobController(
+    private val jobService: JobService,
+    private val objectMapper: ObjectMapper,
+) {
 
     @PostMapping
     fun create(@Valid @RequestBody request: CreateJobRequest): ResponseEntity<JobResponse> {
         val job = jobService.create(request.description, request.url)
-        val body = JobResponse.from(job)
+        val body = JobResponse.from(job, objectMapper)
         return ResponseEntity
             .created(URI.create("/api/jobs/${body.id}"))
             .body(body)
@@ -30,7 +34,7 @@ class JobController(private val jobService: JobService) {
 
     @GetMapping("/{id}")
     fun get(@PathVariable id: UUID): JobResponse =
-        JobResponse.from(jobService.get(id))
+        JobResponse.from(jobService.get(id), objectMapper)
 
     @GetMapping("/{id}/screenshot", produces = [MediaType.IMAGE_PNG_VALUE])
     fun screenshot(@PathVariable id: UUID): ResponseEntity<ByteArray> {

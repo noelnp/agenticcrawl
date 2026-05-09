@@ -1,7 +1,11 @@
 package com.noelnp.agenticcrawl.job
 
+import com.fasterxml.jackson.databind.ObjectMapper
+import com.noelnp.agenticcrawl.analysis.ExtractionExample
+import com.noelnp.agenticcrawl.analysis.PageAnalyzer
+import com.noelnp.agenticcrawl.analysis.ValidationVerdict
 import com.noelnp.agenticcrawl.browser.BrowserService
-import com.noelnp.agenticcrawl.validation.PageValidator
+import com.noelnp.agenticcrawl.browser.PageCapture
 import org.slf4j.LoggerFactory
 import org.slf4j.MDC
 import org.springframework.stereotype.Service
@@ -12,8 +16,9 @@ import java.util.concurrent.ExecutorService
 class JobService(
     private val jobRepository: JobRepository,
     private val browserService: BrowserService,
-    private val pageValidator: PageValidator,
+    private val pageAnalyzer: PageAnalyzer,
     private val jobExecutor: ExecutorService,
+    private val objectMapper: ObjectMapper,
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
 
@@ -47,18 +52,80 @@ class JobService(
         log.info("status -> RUNNING url={}", job.url)
 
         log.debug("starting capture")
-        val screenshot = browserService.captureScreenshot(job.url)
-        update(id) { it.screenshot = screenshot }
-        log.info("capture complete bytes={}", screenshot.size)
+        val capture = browserService.capture(job.url)
+        update(id) { it.screenshot = capture.screenshot }
+        log.info("capture complete bytes={} visibleTextChars={}", capture.screenshot.size, capture.visibleText.length)
 
-        log.debug("starting validation")
-        val outcome = pageValidator.validate(job.description, screenshot)
+        log.debug("starting analysis")
+        val analysis = pageAnalyzer.analyze(job.description, capture.screenshot)
         update(id) {
-            it.validationVerdict = outcome.verdict
-            it.validationReasoning = outcome.reasoning
+            it.validationVerdict = analysis.verdict
+            it.validationReasoning = analysis.reasoning
+        }
+        log.info("analysis verdict={} reasoning='{}'", analysis.verdict, analysis.reasoning)
+
+        if (analysis.verdict == ValidationVerdict.ABSENT) {
+            update(id) { it.status = JobStatus.SUCCEEDED }
+            log.info("status -> SUCCEEDED (verdict ABSENT — skipping example)")
+            return
+        }
+
+        val example = analysis.example
+            ?: throw MissingExampleException(analysis.verdict)
+
+        log.info("example containerType='{}'", example.containerType)
+        example.fields.forEach { (name, value) ->
+            log.info("  field {}='{}'", name, value)
+        }
+
+        val groundedness = checkGroundedness(example, capture)
+        log.info(
+            "groundedness {}/{} matched required={} matched={} unmatched={}",
+            groundedness.matched,
+            groundedness.total,
+            groundedness.required,
+            groundedness.matchedFieldNames,
+            groundedness.unmatchedFieldNames,
+        )
+        if (!groundedness.passes) {
+            throw HallucinatedExampleException(groundedness.matched, groundedness.total)
+        }
+
+        update(id) {
+            it.exampleContainerType = example.containerType
+            it.exampleFieldsJson = objectMapper.writeValueAsString(example.fields)
             it.status = JobStatus.SUCCEEDED
         }
-        log.info("status -> SUCCEEDED verdict={} reasoning='{}'", outcome.verdict, outcome.reasoning)
+        log.info("status -> SUCCEEDED")
+    }
+
+    private data class GroundednessResult(
+        val matched: Int,
+        val total: Int,
+        val required: Int,
+        val matchedFieldNames: List<String>,
+        val unmatchedFieldNames: List<String>,
+    ) {
+        val passes: Boolean get() = matched >= required
+    }
+
+    private fun checkGroundedness(example: ExtractionExample, capture: PageCapture): GroundednessResult {
+        val haystack = capture.visibleText
+        val matched = mutableListOf<String>()
+        val unmatched = mutableListOf<String>()
+        example.fields.forEach { (name, value) ->
+            if (value.isNotBlank() && haystack.contains(value, ignoreCase = true)) matched += name
+            else unmatched += name
+        }
+        val total = example.fields.size
+        val required = maxOf(GROUNDEDNESS_MIN_MATCHES, (total + 1) / 2)
+        return GroundednessResult(
+            matched = matched.size,
+            total = total,
+            required = required,
+            matchedFieldNames = matched,
+            unmatchedFieldNames = unmatched,
+        )
     }
 
     private fun markFailed(id: UUID, message: String) {
@@ -76,8 +143,20 @@ class JobService(
         mutator(job)
         return jobRepository.save(job)
     }
+
+    private companion object {
+        const val GROUNDEDNESS_MIN_MATCHES = 2
+    }
 }
 
 class JobNotFoundException(id: UUID) : RuntimeException("Job not found: $id")
 
 class ScreenshotNotAvailableException(id: UUID) : RuntimeException("Screenshot not yet available for job $id")
+
+class MissingExampleException(verdict: ValidationVerdict) :
+    RuntimeException("Analyzer returned verdict $verdict but did not produce an example")
+
+class HallucinatedExampleException(matched: Int, total: Int) :
+    RuntimeException(
+        "Example appears hallucinated: only $matched of $total field values were found on the page",
+    )
