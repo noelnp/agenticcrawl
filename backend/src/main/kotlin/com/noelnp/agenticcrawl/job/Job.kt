@@ -9,6 +9,8 @@ import jakarta.persistence.GeneratedValue
 import jakarta.persistence.Id
 import jakarta.persistence.Lob
 import jakarta.persistence.Table
+import org.hibernate.annotations.CreationTimestamp
+import org.hibernate.annotations.UpdateTimestamp
 import org.hibernate.annotations.UuidGenerator
 import java.time.Instant
 import java.util.UUID
@@ -45,9 +47,19 @@ class Job(
     @Column(name = "error_message", columnDefinition = "TEXT")
     var errorMessage: String? = null
 
-    @Column(name = "created_at", nullable = false)
+    @CreationTimestamp
+    @Column(name = "created_at", nullable = false, updatable = false)
     var createdAt: Instant = Instant.now()
 
+    @UpdateTimestamp
     @Column(name = "updated_at", nullable = false)
     var updatedAt: Instant = Instant.now()
+
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is Job) return false
+        return id != null && id == other.id
+    }
+
+    override fun hashCode(): Int = javaClass.hashCode()
 }

@@ -8,7 +8,7 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer
 @Configuration
 @ConfigurationProperties(prefix = "agenticcrawl.cors")
 class CorsConfig : WebMvcConfigurer {
-    var allowedOrigins: List<String> = listOf("http://localhost:5173", "http://localhost:3000")
+    var allowedOrigins: List<String> = emptyList()
 
     override fun addCorsMappings(registry: CorsRegistry) {
         registry.addMapping("/api/**")

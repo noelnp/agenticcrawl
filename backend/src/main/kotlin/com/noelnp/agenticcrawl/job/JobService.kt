@@ -5,7 +5,6 @@ import com.noelnp.agenticcrawl.validation.PageValidator
 import org.slf4j.LoggerFactory
 import org.slf4j.MDC
 import org.springframework.stereotype.Service
-import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.ExecutorService
 
@@ -75,9 +74,10 @@ class JobService(
     private fun update(id: UUID, mutator: (Job) -> Unit): Job {
         val job = jobRepository.findById(id).orElseThrow { JobNotFoundException(id) }
         mutator(job)
-        job.updatedAt = Instant.now()
         return jobRepository.save(job)
     }
 }
 
 class JobNotFoundException(id: UUID) : RuntimeException("Job not found: $id")
+
+class ScreenshotNotAvailableException(id: UUID) : RuntimeException("Screenshot not yet available for job $id")
