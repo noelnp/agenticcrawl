@@ -1,8 +1,12 @@
 spring:
   application:
     name: agenticcrawl
+  docker:
+    compose:
+      file: ../compose.yaml
+      lifecycle-management: start_only
   datasource:
-    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/agenticcrawl}
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5433/agenticcrawl}
     username: ${SPRING_DATASOURCE_USERNAME:agenticcrawl}
     password: ${SPRING_DATASOURCE_PASSWORD:agenticcrawl}
   jpa:
@@ -37,8 +41,35 @@ agenticcrawl:
     allowed-origins:
       - http://localhost:5173
       - http://localhost:3000
+  consent:
+    enabled: true
+    max-passes: 3
+    pause-between-passes-ms: 500
+    click-timeout-ms: 2000
+    # Patterns are case-insensitive substring matches against visible button/link text.
+    # Reject is tried before accept on each pass.
+    reject-patterns:
+      - "reject"
+      - "decline"
+      - "only necessary"
+      - "necessary only"
+      - "avvisa"
+      - "endast nödvändiga"
+    accept-patterns:
+      - "accept"
+      - "allow all"
+      - "agree"
+      - "consent"
+      - "got it"
+      - "i understand"
+      - "acceptera"
+      - "godkänn"
+      - "jag förstår"
 
 logging:
   level:
     org.springframework.ai: INFO
     com.microsoft.playwright: INFO
+    com.noelnp.agenticcrawl: DEBUG
+  pattern:
+    level: "%5p [job=%X{jobId:-}]"

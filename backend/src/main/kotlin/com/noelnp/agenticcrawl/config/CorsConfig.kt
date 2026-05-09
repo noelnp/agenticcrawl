@@ -1,4 +1,4 @@
-package io.playgrounddev.agenticcrawl.config
+package com.noelnp.agenticcrawl.config
 
 import org.springframework.boot.context.properties.ConfigurationProperties
 import org.springframework.context.annotation.Configuration
