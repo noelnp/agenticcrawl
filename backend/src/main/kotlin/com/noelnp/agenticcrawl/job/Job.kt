@@ -30,7 +30,7 @@ class Job(
     var id: UUID? = null
 
     @Enumerated(EnumType.STRING)
-    @Column(nullable = false, length = 16)
+    @Column(nullable = false, length = 32)
     var status: JobStatus = JobStatus.PENDING
 
     @Lob
@@ -49,6 +49,10 @@ class Job(
 
     @Column(name = "example_fields_json", columnDefinition = "TEXT")
     var exampleFieldsJson: String? = null
+
+    @Lob
+    @Column(name = "container_html")
+    var containerHtml: String? = null
 
     @Column(name = "error_message", columnDefinition = "TEXT")
     var errorMessage: String? = null

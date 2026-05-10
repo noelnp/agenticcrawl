@@ -127,12 +127,18 @@ button.secondary {
   color: #a8c0ff;
 }
 
+.status-awaiting_confirmation {
+  background: #4a3a1d;
+  color: #f0d090;
+}
+
 .status-succeeded {
   background: #1f3a2a;
   color: #97e2b1;
 }
 
-.status-failed {
+.status-failed,
+.status-expired {
   background: #3a1d1d;
   color: #f5b5b5;
 }
@@ -228,6 +234,45 @@ button.secondary {
   color: #9aa1ac;
   font-size: 0.85rem;
   margin-top: 0.6rem;
+}
+
+.confirm-prompt {
+  margin-top: 1rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid #262b34;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  align-items: flex-start;
+}
+
+.container-html {
+  margin-top: 1rem;
+  border-top: 1px solid #262b34;
+  padding-top: 0.75rem;
+}
+
+.container-html summary {
+  cursor: pointer;
+  font-size: 0.85rem;
+  color: #9aa1ac;
+  user-select: none;
+}
+
+.container-html pre {
+  margin: 0.6rem 0 0;
+  background: #0f1115;
+  border: 1px solid #2a2f39;
+  border-radius: 8px;
+  padding: 0.75rem;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 0.78rem;
+  color: #c4c8d0;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 320px;
+  overflow-y: auto;
 }
 
 .screenshot {

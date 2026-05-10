@@ -1,4 +1,10 @@
-export type JobStatus = "PENDING" | "RUNNING" | "SUCCEEDED" | "FAILED";
+export type JobStatus =
+  | "PENDING"
+  | "RUNNING"
+  | "AWAITING_CONFIRMATION"
+  | "SUCCEEDED"
+  | "FAILED"
+  | "EXPIRED";
 
 export type ValidationVerdict = "PRESENT" | "PARTIAL" | "ABSENT";
 
@@ -10,6 +16,7 @@ export interface Validation {
 export interface Example {
   containerType: string;
   fields: Record<string, string>;
+  containerHtml: string | null;
 }
 
 export interface Job {

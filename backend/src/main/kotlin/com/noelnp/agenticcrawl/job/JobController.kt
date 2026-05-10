@@ -36,6 +36,10 @@ class JobController(
     fun get(@PathVariable id: UUID): JobResponse =
         JobResponse.from(jobService.get(id), objectMapper)
 
+    @PostMapping("/{id}/confirm")
+    fun confirm(@PathVariable id: UUID): JobResponse =
+        JobResponse.from(jobService.confirm(id), objectMapper)
+
     @GetMapping("/{id}/screenshot", produces = [MediaType.IMAGE_PNG_VALUE])
     fun screenshot(@PathVariable id: UUID): ResponseEntity<ByteArray> {
         val job = jobService.get(id)
@@ -48,5 +52,10 @@ class JobController(
     @ExceptionHandler(JobNotFoundException::class, ScreenshotNotAvailableException::class)
     @ResponseStatus(HttpStatus.NOT_FOUND)
     fun handleNotFound(e: RuntimeException): Map<String, String?> =
+        mapOf("error" to e.message)
+
+    @ExceptionHandler(InvalidJobStateException::class, SessionUnavailableException::class)
+    @ResponseStatus(HttpStatus.CONFLICT)
+    fun handleConflict(e: RuntimeException): Map<String, String?> =
         mapOf("error" to e.message)
 }

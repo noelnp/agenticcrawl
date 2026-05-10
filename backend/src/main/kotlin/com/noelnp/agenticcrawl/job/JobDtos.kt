@@ -47,6 +47,7 @@ data class JobResponse(
                 ExampleDto(
                     containerType = containerType,
                     fields = parseFields(job.exampleFieldsJson, objectMapper),
+                    containerHtml = job.containerHtml,
                 )
             },
             errorMessage = job.errorMessage,
@@ -69,4 +70,5 @@ data class ValidationDto(
 data class ExampleDto(
     val containerType: String,
     val fields: Map<String, String>,
+    val containerHtml: String?,
 )
