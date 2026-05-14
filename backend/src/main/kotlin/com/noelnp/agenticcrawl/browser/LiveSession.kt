@@ -31,7 +31,7 @@ class LiveSession internal constructor(
         PageCapture(screenshot = screenshot, visibleText = visibleText)
     }
 
-    fun findContainerHtml(values: List<String>): String? = onSessionThread {
+    fun findRowContainerHtml(values: List<String>): String? = onSessionThread {
         if (values.isEmpty()) return@onSessionThread null
         var loc: Locator = page.locator(ROW_CONTAINER_SELECTOR)
         for (value in values) {
@@ -40,7 +40,17 @@ class LiveSession internal constructor(
         }
         val target = loc.last()
         runCatching { target.evaluate("el => el.outerHTML") as? String }
-            .onFailure { log.warn("findContainerHtml failed: {}", it.message) }
+            .onFailure { log.warn("findRowContainerHtml failed: {}", it.message) }
+            .getOrNull()
+    }
+
+    fun findSingleElementHtml(text: String): String? = onSessionThread {
+        if (text.isBlank()) return@onSessionThread null
+        // getByText returns the tightest element containing the text — no allowlist,
+        // so inline tags like <span> and <p> are reachable (unlike row containers).
+        val target = page.getByText(text).first()
+        runCatching { target.evaluate("el => el.outerHTML") as? String }
+            .onFailure { log.warn("findSingleElementHtml failed: {}", it.message) }
             .getOrNull()
     }
 

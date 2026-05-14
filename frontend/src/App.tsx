@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { confirmJob, createJob, fetchJob, screenshotUrl } from "./api";
-import type { Job } from "./types";
+import type { Job, Target } from "./types";
 import "./App.css";
 
 const TERMINAL_STATUSES = new Set(["SUCCEEDED", "FAILED", "EXPIRED"]);
@@ -157,16 +157,17 @@ function JobView({
           <p>{job.validation.reasoning}</p>
           {isAbsent && (
             <p className="muted">
-              No example was extracted because the page does not contain the
-              requested content.
+              No target was extracted because the page does not contain what
+              was requested.
             </p>
           )}
         </div>
       )}
 
-      {job.example && (
-        <ExampleBlock
-          example={job.example}
+      {job.target && (
+        <TargetBlock
+          target={job.target}
+          containerHtml={job.containerHtml}
           awaitingConfirmation={awaitingConfirmation}
           confirming={confirming}
           onConfirm={onConfirm}
@@ -183,31 +184,65 @@ function JobView({
   );
 }
 
-function ExampleBlock({
-  example,
+function TargetBlock({
+  target,
+  containerHtml,
   awaitingConfirmation,
   confirming,
   onConfirm,
 }: {
-  example: NonNullable<Job["example"]>;
+  target: Target;
+  containerHtml: string | null;
   awaitingConfirmation: boolean;
   confirming: boolean;
   onConfirm: () => void;
 }) {
-  const entries = Object.entries(example.fields);
+  const heading =
+    target.kind === "ACTION"
+      ? `Action (${target.verb})`
+      : target.type === "MULTI"
+      ? "Row target (MULTI)"
+      : "Value target (SINGLE)";
+
+  const discriminator =
+    target.kind === "ACTION"
+      ? `kind=ACTION · verb=${target.verb}`
+      : `kind=DATA · type=${target.type}`;
+
+  const confirmPrompt =
+    target.kind === "ACTION"
+      ? "Is this the element to interact with?"
+      : target.type === "MULTI"
+      ? "Does this look like the row structure you want extracted?"
+      : "Is this the value you want extracted?";
+
   return (
     <div className="example">
-      <h3>Example</h3>
-      <div className="example-container-type">{example.containerType}</div>
-      {entries.length > 0 && (
+      <h3>{heading}</h3>
+      <div className="target-discriminator muted">{discriminator}</div>
+
+      {target.kind === "DATA" ? (
         <table className="example-fields">
           <tbody>
-            {entries.map(([name, value]) => (
-              <tr key={name}>
-                <th>{name}</th>
-                <td>{value}</td>
+            {target.fields.map((f) => (
+              <tr key={f.name}>
+                <th>{f.name}</th>
+                <td>{f.text}</td>
               </tr>
             ))}
+          </tbody>
+        </table>
+      ) : (
+        <table className="example-fields">
+          <tbody>
+            <tr>
+              <th>verb</th>
+              <td>{target.verb}</td>
+            </tr>
+            <tr>
+              <th>text</th>
+              <td>{target.text}</td>
+            </tr>
           </tbody>
         </table>
       )}
@@ -215,20 +250,19 @@ function ExampleBlock({
       {awaitingConfirmation && (
         <div className="confirm-prompt">
           <p className="muted">
-            Does this look like the row structure you want extracted? Confirm
-            within 3 minutes to continue. The browser session will close
-            automatically after that.
+            {confirmPrompt} Confirm within 3 minutes to continue. The browser
+            session will close automatically after that.
           </p>
           <button type="button" onClick={onConfirm} disabled={confirming}>
-            {confirming ? "Confirming…" : "Confirm structure"}
+            {confirming ? "Confirming…" : "Confirm"}
           </button>
         </div>
       )}
 
-      {example.containerHtml && (
+      {containerHtml && (
         <details className="container-html">
           <summary>Container HTML</summary>
-          <pre>{example.containerHtml}</pre>
+          <pre>{containerHtml}</pre>
         </details>
       )}
     </div>

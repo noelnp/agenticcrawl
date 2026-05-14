@@ -1,8 +1,9 @@
 package com.noelnp.agenticcrawl.job
 
 import com.fasterxml.jackson.databind.ObjectMapper
-import com.noelnp.agenticcrawl.analysis.ExtractionExample
 import com.noelnp.agenticcrawl.analysis.PageAnalyzer
+import com.noelnp.agenticcrawl.analysis.Target
+import com.noelnp.agenticcrawl.analysis.TargetType
 import com.noelnp.agenticcrawl.analysis.ValidationVerdict
 import com.noelnp.agenticcrawl.browser.BrowserService
 import com.noelnp.agenticcrawl.browser.BrowserSessionManager
@@ -82,36 +83,32 @@ class JobService(
 
             if (analysis.verdict == ValidationVerdict.ABSENT) {
                 update(id) { it.status = JobStatus.SUCCEEDED }
-                log.info("status -> SUCCEEDED (verdict ABSENT — skipping example)")
+                log.info("status -> SUCCEEDED (verdict ABSENT — skipping target)")
                 session.close()
                 session = null
                 return
             }
 
-            val example = analysis.example
-                ?: throw MissingExampleException(analysis.verdict)
+            val target = analysis.target
+                ?: throw MissingTargetException(analysis.verdict)
 
-            log.info("example containerType='{}'", example.containerType)
-            example.fields.forEach { (name, value) ->
-                log.info("  field {}='{}'", name, value)
-            }
+            logTarget(target)
 
-            val groundedness = checkGroundedness(example, capture)
+            val groundedness = checkGroundedness(target, capture)
             log.info(
                 "groundedness {}/{} matched required={} matched={} unmatched={}",
                 groundedness.matched,
                 groundedness.total,
                 groundedness.required,
-                groundedness.matchedFieldNames,
-                groundedness.unmatchedFieldNames,
+                groundedness.matchedNames,
+                groundedness.unmatchedNames,
             )
             if (!groundedness.passes) {
-                throw HallucinatedExampleException(groundedness.matched, groundedness.total)
+                throw HallucinatedTargetException(groundedness.matched, groundedness.total)
             }
 
             update(id) {
-                it.exampleContainerType = example.containerType
-                it.exampleFieldsJson = objectMapper.writeValueAsString(example.fields)
+                it.targetJson = objectMapper.writeValueAsString(target)
                 it.status = JobStatus.AWAITING_CONFIRMATION
             }
             sessionManager.register(id, session, CONFIRMATION_TTL_SECONDS) {
@@ -129,16 +126,26 @@ class JobService(
 
     private fun runLocator(id: UUID, session: LiveSession) {
         try {
-            val fieldsJson = jobRepository.findById(id).orElseThrow { JobNotFoundException(id) }
-                .exampleFieldsJson
-            val groundedValues = parseGroundedValues(fieldsJson)
-            log.debug("running locator over {} grounded values", groundedValues.size)
+            val targetJson = jobRepository.findById(id).orElseThrow { JobNotFoundException(id) }
+                .targetJson
+            val target = parseTarget(targetJson)
+            if (target !is Target.Data) {
+                log.info("locator skipped — target is not a DATA target (got {})", target?.let { it::class.simpleName })
+                update(id) { it.status = JobStatus.SUCCEEDED }
+                return
+            }
 
-            val containerHtml = session.findContainerHtml(groundedValues)
+            val groundedValues = target.fields.map { it.text }.filter { it.isNotBlank() }
+            log.debug("running locator over {} grounded values (type={})", groundedValues.size, target.type)
+
+            val containerHtml = when (target.type) {
+                TargetType.MULTI -> session.findRowContainerHtml(groundedValues)
+                TargetType.SINGLE -> groundedValues.firstOrNull()?.let { session.findSingleElementHtml(it) }
+            }
             if (containerHtml.isNullOrBlank()) {
-                log.warn("locator returned no container — saving job without containerHtml")
+                log.warn("locator returned no element — saving job without containerHtml")
             } else {
-                log.info("locator captured containerHtml chars={}", containerHtml.length)
+                log.info("locator captured html chars={}", containerHtml.length)
             }
 
             update(id) {
@@ -173,40 +180,70 @@ class JobService(
         }
     }
 
-    private fun parseGroundedValues(fieldsJson: String?): List<String> {
-        if (fieldsJson.isNullOrBlank()) return emptyList()
-        @Suppress("UNCHECKED_CAST")
-        val map = objectMapper.readValue(fieldsJson, LinkedHashMap::class.java) as Map<String, String>
-        return map.values.filter { it.isNotBlank() }.toList()
+    private fun parseTarget(json: String?): Target? {
+        if (json.isNullOrBlank()) return null
+        return objectMapper.readValue(json, Target::class.java)
+    }
+
+    private fun logTarget(target: Target) {
+        when (target) {
+            is Target.Data -> {
+                log.info("target DATA type={} fields={}", target.type, target.fields.size)
+                target.fields.forEach { log.info("  field {}='{}'", it.name, it.text) }
+            }
+            is Target.Action -> {
+                log.info("target ACTION verb={} text='{}'", target.verb, target.text)
+            }
+        }
     }
 
     private data class GroundednessResult(
         val matched: Int,
         val total: Int,
         val required: Int,
-        val matchedFieldNames: List<String>,
-        val unmatchedFieldNames: List<String>,
+        val matchedNames: List<String>,
+        val unmatchedNames: List<String>,
     ) {
         val passes: Boolean get() = matched >= required
     }
 
-    private fun checkGroundedness(example: ExtractionExample, capture: PageCapture): GroundednessResult {
-        val haystack = capture.visibleText
-        val matched = mutableListOf<String>()
-        val unmatched = mutableListOf<String>()
-        example.fields.forEach { (name, value) ->
-            if (value.isNotBlank() && haystack.contains(value, ignoreCase = true)) matched += name
-            else unmatched += name
+    private fun checkGroundedness(target: Target, capture: PageCapture): GroundednessResult {
+        val haystack = normalizeWhitespace(capture.visibleText)
+        val (matched, unmatched) = when (target) {
+            is Target.Data ->
+                partitionGrounded(target.fields.map { it.name to it.text }, haystack)
+            is Target.Action ->
+                partitionGrounded(listOf("text" to target.text), haystack)
         }
-        val total = example.fields.size
-        val required = maxOf(GROUNDEDNESS_MIN_MATCHES, (total + 1) / 2)
+        val total = matched.size + unmatched.size
+        val required = when (target) {
+            is Target.Data -> when (target.type) {
+                TargetType.SINGLE -> 1
+                TargetType.MULTI -> maxOf(GROUNDEDNESS_MIN_MATCHES, (total + 1) / 2)
+            }
+            is Target.Action -> 1
+        }
         return GroundednessResult(
             matched = matched.size,
             total = total,
             required = required,
-            matchedFieldNames = matched,
-            unmatchedFieldNames = unmatched,
+            matchedNames = matched,
+            unmatchedNames = unmatched,
         )
+    }
+
+    private fun partitionGrounded(
+        entries: List<Pair<String, String>>,
+        haystack: String,
+    ): Pair<List<String>, List<String>> {
+        val matched = mutableListOf<String>()
+        val unmatched = mutableListOf<String>()
+        entries.forEach { (name, text) ->
+            val needle = normalizeWhitespace(text)
+            if (needle.isNotBlank() && haystack.contains(needle, ignoreCase = true)) matched += name
+            else unmatched += name
+        }
+        return matched to unmatched
     }
 
     private fun markFailed(id: UUID, message: String) {
@@ -225,9 +262,15 @@ class JobService(
         return jobRepository.save(job)
     }
 
+    private fun normalizeWhitespace(s: String): String =
+        s.replace(WHITESPACE_REGEX, " ").trim()
+
     private companion object {
         const val GROUNDEDNESS_MIN_MATCHES = 2
         const val CONFIRMATION_TTL_SECONDS = 180L
+        // \p{Zs} = Unicode space-separator category (NBSP, NARROW NBSP, THIN SPACE, etc.)
+        // Combined with \s to also catch tab/newline.
+        val WHITESPACE_REGEX = Regex("[\\p{Zs}\\s]+")
     }
 }
 
@@ -235,12 +278,12 @@ class JobNotFoundException(id: UUID) : RuntimeException("Job not found: $id")
 
 class ScreenshotNotAvailableException(id: UUID) : RuntimeException("Screenshot not yet available for job $id")
 
-class MissingExampleException(verdict: ValidationVerdict) :
-    RuntimeException("Analyzer returned verdict $verdict but did not produce an example")
+class MissingTargetException(verdict: ValidationVerdict) :
+    RuntimeException("Analyzer returned verdict $verdict but did not produce a target")
 
-class HallucinatedExampleException(matched: Int, total: Int) :
+class HallucinatedTargetException(matched: Int, total: Int) :
     RuntimeException(
-        "Example appears hallucinated: only $matched of $total field values were found on the page",
+        "Target appears hallucinated: only $matched of $total values were found on the page",
     )
 
 class InvalidJobStateException(id: UUID, actual: JobStatus, expected: JobStatus) :

@@ -44,11 +44,8 @@ class Job(
     @Column(name = "validation_reasoning", columnDefinition = "TEXT")
     var validationReasoning: String? = null
 
-    @Column(name = "example_container_type", columnDefinition = "TEXT")
-    var exampleContainerType: String? = null
-
-    @Column(name = "example_fields_json", columnDefinition = "TEXT")
-    var exampleFieldsJson: String? = null
+    @Column(name = "target_json", columnDefinition = "TEXT")
+    var targetJson: String? = null
 
     @Lob
     @Column(name = "container_html")

@@ -41,6 +41,22 @@ agenticcrawl:
     allowed-origins:
       - http://localhost:5173
       - http://localhost:3000
+  browser:
+    # Anti-bot notes: stock headless Chromium gets blocked by Akamai/Cloudflare on sites
+    # like zalando.* — the response never resolves and any waitUntil times out. Flip
+    # `headless: false` to confirm detection if a navigation hangs. `channel: chrome`
+    # uses locally installed Chrome (must be present) which is harder to fingerprint than
+    # the bundled Chromium.
+    headless: false
+    channel:
+    navigation-timeout-ms: 60000
+    wait-until: DOMCONTENTLOADED
+    post-load-settle-ms: 1500
+    post-dismiss-settle-ms: 300
+    user-agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    locale: "sv-SE"
+    timezone-id: "Europe/Stockholm"
+    accept-language: "sv-SE,sv;q=0.9,en-US;q=0.8,en;q=0.7"
   consent:
     enabled: true
     max-passes: 3
