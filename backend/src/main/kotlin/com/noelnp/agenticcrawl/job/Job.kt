@@ -51,6 +51,9 @@ class Job(
     @Column(name = "container_html")
     var containerHtml: String? = null
 
+    @Column(name = "extracted_structure_json", columnDefinition = "TEXT")
+    var extractedStructureJson: String? = null
+
     @Column(name = "error_message", columnDefinition = "TEXT")
     var errorMessage: String? = null
 

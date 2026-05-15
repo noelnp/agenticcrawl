@@ -2,6 +2,7 @@ package com.noelnp.agenticcrawl.job
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.noelnp.agenticcrawl.analysis.PageAnalyzer
+import com.noelnp.agenticcrawl.analysis.SelectorMapper
 import com.noelnp.agenticcrawl.analysis.Target
 import com.noelnp.agenticcrawl.analysis.TargetType
 import com.noelnp.agenticcrawl.analysis.ValidationVerdict
@@ -21,6 +22,7 @@ class JobService(
     private val browserService: BrowserService,
     private val sessionManager: BrowserSessionManager,
     private val pageAnalyzer: PageAnalyzer,
+    private val selectorMapper: SelectorMapper,
     private val jobExecutor: ExecutorService,
     private val objectMapper: ObjectMapper,
 ) {
@@ -129,11 +131,7 @@ class JobService(
             val targetJson = jobRepository.findById(id).orElseThrow { JobNotFoundException(id) }
                 .targetJson
             val target = parseTarget(targetJson)
-            if (target !is Target.Data) {
-                log.info("locator skipped — target is not a DATA target (got {})", target?.let { it::class.simpleName })
-                update(id) { it.status = JobStatus.SUCCEEDED }
-                return
-            }
+                ?: throw IllegalStateException("locator invoked but no target stored on job")
 
             val groundedValues = target.fields.map { it.text }.filter { it.isNotBlank() }
             log.debug("running locator over {} grounded values (type={})", groundedValues.size, target.type)
@@ -148,8 +146,23 @@ class JobService(
                 log.info("locator captured html chars={}", containerHtml.length)
             }
 
+            val structure = containerHtml
+                ?.takeIf { it.isNotBlank() }
+                ?.let { selectorMapper.map(it, target.fields, target.type) }
+            val structureJson = structure?.let { objectMapper.writeValueAsString(it) }
+            if (structure != null) {
+                log.info(
+                    "structure rowSelector='{}' fields={}",
+                    structure.rowSelector,
+                    structure.fields.joinToString { "${it.name}->${it.selector}" },
+                )
+            } else if (!containerHtml.isNullOrBlank()) {
+                log.warn("structure inference returned no result")
+            }
+
             update(id) {
                 it.containerHtml = containerHtml
+                it.extractedStructureJson = structureJson
                 it.status = JobStatus.SUCCEEDED
             }
             log.info("status -> SUCCEEDED")
@@ -186,15 +199,8 @@ class JobService(
     }
 
     private fun logTarget(target: Target) {
-        when (target) {
-            is Target.Data -> {
-                log.info("target DATA type={} fields={}", target.type, target.fields.size)
-                target.fields.forEach { log.info("  field {}='{}'", it.name, it.text) }
-            }
-            is Target.Action -> {
-                log.info("target ACTION verb={} text='{}'", target.verb, target.text)
-            }
-        }
+        log.info("target type={} fields={}", target.type, target.fields.size)
+        target.fields.forEach { log.info("  field {}='{}'", it.name, it.text) }
     }
 
     private data class GroundednessResult(
@@ -209,19 +215,14 @@ class JobService(
 
     private fun checkGroundedness(target: Target, capture: PageCapture): GroundednessResult {
         val haystack = normalizeWhitespace(capture.visibleText)
-        val (matched, unmatched) = when (target) {
-            is Target.Data ->
-                partitionGrounded(target.fields.map { it.name to it.text }, haystack)
-            is Target.Action ->
-                partitionGrounded(listOf("text" to target.text), haystack)
-        }
+        val (matched, unmatched) = partitionGrounded(
+            target.fields.map { it.name to it.text },
+            haystack,
+        )
         val total = matched.size + unmatched.size
-        val required = when (target) {
-            is Target.Data -> when (target.type) {
-                TargetType.SINGLE -> 1
-                TargetType.MULTI -> maxOf(GROUNDEDNESS_MIN_MATCHES, (total + 1) / 2)
-            }
-            is Target.Action -> 1
+        val required = when (target.type) {
+            TargetType.SINGLE -> 1
+            TargetType.MULTI -> maxOf(GROUNDEDNESS_MIN_MATCHES, (total + 1) / 2)
         }
         return GroundednessResult(
             matched = matched.size,

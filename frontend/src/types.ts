@@ -14,26 +14,30 @@ export interface Validation {
 }
 
 export type TargetType = "SINGLE" | "MULTI";
-export type ActionType = "CLICK" | "FILL";
 
 export interface TargetField {
   name: string;
   text: string;
 }
 
-export interface DataTarget {
-  kind: "DATA";
+export interface Target {
   type: TargetType;
   fields: TargetField[];
 }
 
-export interface ActionTarget {
-  kind: "ACTION";
-  verb: ActionType;
-  text: string;
+export type ValueSource = { from: "TEXT" } | { from: "ATTRIBUTE"; name: string };
+
+export interface FieldSelector {
+  name: string;
+  selector: string;
+  source: ValueSource;
+  nth?: number | null;
 }
 
-export type Target = DataTarget | ActionTarget;
+export interface ExtractedStructure {
+  rowSelector: string;
+  fields: FieldSelector[];
+}
 
 export interface Job {
   id: string;
@@ -43,6 +47,7 @@ export interface Job {
   validation: Validation | null;
   target: Target | null;
   containerHtml: string | null;
+  extractedStructure: ExtractedStructure | null;
   errorMessage: string | null;
   hasScreenshot: boolean;
   createdAt: string;

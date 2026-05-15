@@ -31,6 +31,7 @@ dependencies {
     implementation("org.springframework.ai:spring-ai-starter-model-openai")
 
     implementation("com.microsoft.playwright:playwright:${property("playwrightVersion")}")
+    implementation("org.jsoup:jsoup:1.18.3")
 
     implementation("com.fasterxml.jackson.module:jackson-module-kotlin")
     implementation("org.jetbrains.kotlin:kotlin-reflect")

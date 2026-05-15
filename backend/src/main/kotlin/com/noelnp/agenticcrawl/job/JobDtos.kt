@@ -28,6 +28,7 @@ data class JobResponse(
     val validation: ValidationDto?,
     val target: JsonNode?,
     val containerHtml: String?,
+    val extractedStructure: JsonNode?,
     val errorMessage: String?,
     val hasScreenshot: Boolean,
     val createdAt: Instant,
@@ -44,6 +45,9 @@ data class JobResponse(
             },
             target = job.targetJson?.takeIf { it.isNotBlank() }?.let { objectMapper.readTree(it) },
             containerHtml = job.containerHtml,
+            extractedStructure = job.extractedStructureJson
+                ?.takeIf { it.isNotBlank() }
+                ?.let { objectMapper.readTree(it) },
             errorMessage = job.errorMessage,
             hasScreenshot = job.screenshot != null,
             createdAt = job.createdAt,

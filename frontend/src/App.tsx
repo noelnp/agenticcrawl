@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { confirmJob, createJob, fetchJob, screenshotUrl } from "./api";
-import type { Job, Target } from "./types";
+import type { ExtractedStructure, Job, Target } from "./types";
 import "./App.css";
 
 const TERMINAL_STATUSES = new Set(["SUCCEEDED", "FAILED", "EXPIRED"]);
@@ -167,11 +167,14 @@ function JobView({
       {job.target && (
         <TargetBlock
           target={job.target}
-          containerHtml={job.containerHtml}
           awaitingConfirmation={awaitingConfirmation}
           confirming={confirming}
           onConfirm={onConfirm}
         />
+      )}
+
+      {job.extractedStructure && (
+        <StructureBlock structure={job.extractedStructure} />
       )}
 
       {job.hasScreenshot && (
@@ -186,66 +189,38 @@ function JobView({
 
 function TargetBlock({
   target,
-  containerHtml,
   awaitingConfirmation,
   confirming,
   onConfirm,
 }: {
   target: Target;
-  containerHtml: string | null;
   awaitingConfirmation: boolean;
   confirming: boolean;
   onConfirm: () => void;
 }) {
   const heading =
-    target.kind === "ACTION"
-      ? `Action (${target.verb})`
-      : target.type === "MULTI"
-      ? "Row target (MULTI)"
-      : "Value target (SINGLE)";
-
-  const discriminator =
-    target.kind === "ACTION"
-      ? `kind=ACTION · verb=${target.verb}`
-      : `kind=DATA · type=${target.type}`;
+    target.type === "MULTI" ? "Row target (MULTI)" : "Value target (SINGLE)";
 
   const confirmPrompt =
-    target.kind === "ACTION"
-      ? "Is this the element to interact with?"
-      : target.type === "MULTI"
+    target.type === "MULTI"
       ? "Does this look like the row structure you want extracted?"
       : "Is this the value you want extracted?";
 
   return (
     <div className="example">
       <h3>{heading}</h3>
-      <div className="target-discriminator muted">{discriminator}</div>
+      <div className="target-discriminator muted">type={target.type}</div>
 
-      {target.kind === "DATA" ? (
-        <table className="example-fields">
-          <tbody>
-            {target.fields.map((f) => (
-              <tr key={f.name}>
-                <th>{f.name}</th>
-                <td>{f.text}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      ) : (
-        <table className="example-fields">
-          <tbody>
-            <tr>
-              <th>verb</th>
-              <td>{target.verb}</td>
+      <table className="example-fields">
+        <tbody>
+          {target.fields.map((f) => (
+            <tr key={f.name}>
+              <th>{f.name}</th>
+              <td>{f.text}</td>
             </tr>
-            <tr>
-              <th>text</th>
-              <td>{target.text}</td>
-            </tr>
-          </tbody>
-        </table>
-      )}
+          ))}
+        </tbody>
+      </table>
 
       {awaitingConfirmation && (
         <div className="confirm-prompt">
@@ -259,12 +234,37 @@ function TargetBlock({
         </div>
       )}
 
-      {containerHtml && (
-        <details className="container-html">
-          <summary>Container HTML</summary>
-          <pre>{containerHtml}</pre>
-        </details>
-      )}
+    </div>
+  );
+}
+
+function StructureBlock({ structure }: { structure: ExtractedStructure }) {
+  return (
+    <div className="example">
+      <h3>Inferred structure</h3>
+      <div className="target-discriminator muted">
+        rowSelector: <code>{structure.rowSelector}</code>
+      </div>
+      <table className="example-fields">
+        <tbody>
+          {structure.fields.map((f) => (
+            <tr key={f.name}>
+              <th>{f.name}</th>
+              <td>
+                <code>{f.selector}</code>{" "}
+                <span className="muted">
+                  ({[
+                    f.nth != null ? `nth: ${f.nth}` : null,
+                    f.source.from === "TEXT" ? "text" : `attr:${f.source.name}`,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")})
+                </span>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }

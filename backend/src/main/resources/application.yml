@@ -21,7 +21,7 @@ spring:
       api-key: ${OPENAI_API_KEY:}
       chat:
         options:
-          model: gpt-4o
+          model: gpt-5.4
           temperature: 0.2
 
 server:
@@ -42,11 +42,6 @@ agenticcrawl:
       - http://localhost:5173
       - http://localhost:3000
   browser:
-    # Anti-bot notes: stock headless Chromium gets blocked by Akamai/Cloudflare on sites
-    # like zalando.* — the response never resolves and any waitUntil times out. Flip
-    # `headless: false` to confirm detection if a navigation hangs. `channel: chrome`
-    # uses locally installed Chrome (must be present) which is harder to fingerprint than
-    # the bundled Chromium.
     headless: false
     channel:
     navigation-timeout-ms: 60000
@@ -62,8 +57,6 @@ agenticcrawl:
     max-passes: 3
     pause-between-passes-ms: 500
     click-timeout-ms: 2000
-    # Patterns are case-insensitive substring matches against visible button/link text.
-    # Reject is tried before accept on each pass.
     reject-patterns:
       - "reject"
       - "decline"

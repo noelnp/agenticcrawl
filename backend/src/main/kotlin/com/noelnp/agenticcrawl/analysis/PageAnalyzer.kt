@@ -39,16 +39,16 @@ class PageAnalyzer(chatClientBuilder: ChatClient.Builder) {
               - ABSENT:  the page does not contain the target.
 
             Step 2 — if PRESENT or PARTIAL, produce ONE concrete `target` from
-            something you can actually see on the page. Pick the kind that
+            something you can actually see on the page. Pick the type that
             matches the user's intent:
 
-              kind=DATA, type=SINGLE
+              type=SINGLE
                 One unique value on the page. Example: a current price, a stock
                 count, a headline. Emit one field with `name` (short camelCase
                 key derived from intent + what you see, e.g. "price") and
                 `text` (the visible text, copied exactly).
 
-              kind=DATA, type=MULTI
+              type=MULTI
                 A repeating row structure (a table, a list of cards, search
                 results). Pick ONE visible row instance. Emit 2–8 fields read
                 from that single row — `name` is a short camelCase key
@@ -56,18 +56,20 @@ class PageAnalyzer(chatClientBuilder: ChatClient.Builder) {
                 visible text copied exactly. Names must be consistent with
                 what other rows would also provide.
 
-              kind=ACTION
-                An interactive element the user needs to operate. Emit `verb`
-                (CLICK for buttons/links, FILL for inputs/textareas/search
-                boxes) and `text` (for CLICK the visible label e.g. "Logga
-                in"; for FILL the text to type).
-
             CRITICAL RULES — read carefully:
             - Only return text you can clearly read in the screenshot.
             - Do not invent, guess, or infer text based on what you would
               *expect* a page of this type to contain. Read the actual pixels.
             - Copy text exactly as displayed (capitalisation, accents,
               special characters, punctuation, whitespace).
+            - For purely numeric values (prices, ratings, counts, scores,
+              quantities), emit only the digits and decimal/thousands
+              separators. Drop currency symbols, unit suffixes, and
+              decorative typography.
+            - Do not infer numeric values from visual elements like star
+              bars, progress meters, filled-icon indicators, or charts.
+              Only emit a numeric value when the digits are rendered as
+              text on the page.
             - If you cannot clearly read a field, omit it rather than guessing.
             - For MULTI: pick ONE specific visible row. Do not aggregate
               across rows. Field names must be in camelCase.
@@ -78,24 +80,20 @@ class PageAnalyzer(chatClientBuilder: ChatClient.Builder) {
             2. reasoning: one short sentence grounded in what is visible.
             3. target: object as described above (null if ABSENT). The object
                has shape:
-                 { kind: "DATA",   type: "SINGLE"|"MULTI", fields: [{name, text}] }
-                 { kind: "ACTION", verb: "CLICK"|"FILL",    text: "..." }
-               Unused fields for the chosen kind should be null/omitted.
+                 { type: "SINGLE"|"MULTI", fields: [{name, text}] }
 
             Examples (illustrative — do not copy):
               SINGLE:
-                { kind: "DATA", type: "SINGLE",
+                { type: "SINGLE",
                   fields: [{ name: "price", text: "1 803,58 kr" }] }
               MULTI:
-                { kind: "DATA", type: "MULTI",
+                { type: "MULTI",
                   fields: [
                     { name: "teamHome",  text: "Liverpool" },
                     { name: "teamAway",  text: "Chelsea" },
                     { name: "scoreHome", text: "2" },
                     { name: "scoreAway", text: "1" }
                   ] }
-              ACTION:
-                { kind: "ACTION", verb: "CLICK", text: "Logga in" }
         """.trimIndent()
 
         val raw = chatClient.prompt()
@@ -115,36 +113,24 @@ class PageAnalyzer(chatClientBuilder: ChatClient.Builder) {
             target = target,
         )
         log.debug(
-            "analyzer returned verdict={} targetKind={} targetType={} fieldCount={}",
+            "analyzer returned verdict={} targetType={} fieldCount={}",
             analysis.verdict,
-            target?.let { it::class.simpleName },
-            (target as? Target.Data)?.type,
-            (target as? Target.Data)?.fields?.size ?: 0,
+            target?.type,
+            target?.fields?.size ?: 0,
         )
         return analysis
     }
 
     private fun RawTarget.toTarget(): Target? {
-        return when (kind) {
-            TargetKind.DATA -> {
-                val t = type ?: return null
-                val cleaned = fields.orEmpty()
-                    .asSequence()
-                    .map { TargetField(it.name.trim(), it.text.trim()) }
-                    .filter { it.name.isNotEmpty() && it.text.isNotEmpty() }
-                    .take(MAX_FIELDS)
-                    .toList()
-                if (cleaned.isEmpty()) null else Target.Data(type = t, fields = cleaned)
-            }
-            TargetKind.ACTION -> {
-                val v = verb ?: return null
-                val t = text?.trim().orEmpty()
-                if (t.isEmpty()) null else Target.Action(verb = v, text = t)
-            }
-        }
+        val t = type ?: return null
+        val cleaned = fields.orEmpty()
+            .asSequence()
+            .map { TargetField(it.name.trim(), it.text.trim()) }
+            .filter { it.name.isNotEmpty() && it.text.isNotEmpty() }
+            .take(MAX_FIELDS)
+            .toList()
+        return if (cleaned.isEmpty()) null else Target(type = t, fields = cleaned)
     }
-
-    private enum class TargetKind { DATA, ACTION }
 
     private data class RawAnalysis(
         @JsonProperty("verdict") val verdict: ValidationVerdict,
@@ -153,11 +139,8 @@ class PageAnalyzer(chatClientBuilder: ChatClient.Builder) {
     )
 
     private data class RawTarget(
-        @JsonProperty("kind") val kind: TargetKind,
         @JsonProperty("type") val type: TargetType?,
         @JsonProperty("fields") val fields: List<RawField>?,
-        @JsonProperty("verb") val verb: ActionType?,
-        @JsonProperty("text") val text: String?,
     )
 
     private data class RawField(
