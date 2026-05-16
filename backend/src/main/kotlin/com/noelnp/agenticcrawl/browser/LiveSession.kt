@@ -5,6 +5,7 @@ import com.microsoft.playwright.BrowserContext
 import com.microsoft.playwright.Locator
 import com.microsoft.playwright.Page
 import com.microsoft.playwright.Playwright
+import com.noelnp.agenticcrawl.analysis.DetailLinkSelector
 import com.noelnp.agenticcrawl.browser.consent.ConsentDismisser
 import org.slf4j.LoggerFactory
 import java.util.concurrent.ExecutorService
@@ -25,6 +26,15 @@ class LiveSession internal constructor(
     private var closed = false
 
     fun currentUrl(): String = onSessionThread { page.url() }
+
+    fun resolveDetailLinkHref(detailLink: DetailLinkSelector): String? = onSessionThread {
+        val locator = page.locator(detailLink.selector)
+        val target = when (val nth = detailLink.nth) {
+            null -> locator.first()
+            else -> locator.nth(nth)
+        }
+        runCatching { target.getAttribute("href") }.getOrNull()?.takeIf { it.isNotBlank() }
+    }
 
     fun navigateTo(url: String): Boolean = onSessionThread {
         log.info("navigating to {}", url)

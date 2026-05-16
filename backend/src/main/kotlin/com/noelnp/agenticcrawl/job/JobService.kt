@@ -2,6 +2,7 @@ package com.noelnp.agenticcrawl.job
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.noelnp.agenticcrawl.analysis.DetailLinkFinder
+import com.noelnp.agenticcrawl.analysis.PageAnalysis
 import com.noelnp.agenticcrawl.analysis.PageAnalyzer
 import com.noelnp.agenticcrawl.analysis.SelectorMapper
 import com.noelnp.agenticcrawl.analysis.Target
@@ -13,6 +14,7 @@ import com.noelnp.agenticcrawl.browser.LiveSession
 import com.noelnp.agenticcrawl.browser.PageCapture
 import org.slf4j.LoggerFactory
 import org.slf4j.MDC
+import org.springframework.context.annotation.Lazy
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import java.util.UUID
@@ -26,6 +28,7 @@ class JobService(
     private val pageAnalyzer: PageAnalyzer,
     private val selectorMapper: SelectorMapper,
     private val detailLinkFinder: DetailLinkFinder,
+    @Lazy private val orchestrator: Orchestrator,
     private val jobExecutor: ExecutorService,
     private val objectMapper: ObjectMapper,
 ) {
@@ -157,6 +160,7 @@ class JobService(
     }
 
     private fun runListingMapping(id: UUID, session: LiveSession) {
+        var handedOff = false
         try {
             val target = loadListingTarget(id)
                 ?: throw IllegalStateException("listing mapping invoked but no target stored on layer 0")
@@ -204,17 +208,15 @@ class JobService(
                 layer.extractedStructureJson = structureJson
             }
 
-            // Until the planner / orchestrator lands, terminate here.
-            update(id) {
-                it.status = JobStatus.SUCCEEDED
-                it.goalSatisfied = true
-            }
-            log.info("status -> SUCCEEDED")
+            // Hand off to the orchestrator. It owns the planner loop and the
+            // session lifecycle from this point on.
+            handedOff = true
+            orchestrator.runPlannerLoop(id, session)
         } catch (e: Exception) {
             log.error("listing mapping failed: {}", e.message, e)
             markFailed(id, e.message ?: e.javaClass.simpleName)
         } finally {
-            runCatching { session.close() }
+            if (!handedOff) runCatching { session.close() }
         }
     }
 
@@ -292,7 +294,7 @@ class JobService(
         )
     }
 
-    private fun markFailed(id: UUID, message: String) {
+    fun markFailed(id: UUID, message: String) {
         runCatching {
             update(id) {
                 it.status = JobStatus.FAILED
@@ -300,6 +302,60 @@ class JobService(
             }
             log.warn("status -> FAILED message='{}'", message)
         }.onFailure { log.error("could not mark job failed", it) }
+    }
+
+    fun markGoalSatisfied(id: UUID) {
+        update(id) {
+            it.status = JobStatus.SUCCEEDED
+            it.goalSatisfied = true
+        }
+        log.info("status -> SUCCEEDED (goal satisfied)")
+    }
+
+    fun recordPlanStep(
+        id: UUID,
+        action: PlanAction,
+        reasoning: String,
+        outcome: PlanOutcome,
+        detail: String? = null,
+    ) {
+        update(id) { j ->
+            val step = PlanStep(
+                job = j,
+                stepIndex = j.planSteps.size,
+                action = action,
+                reasoning = reasoning,
+            )
+            step.outcome = outcome
+            step.detailMessage = detail
+            j.planSteps.add(step)
+        }
+    }
+
+    fun appendLayer(
+        id: UUID,
+        atUrl: String,
+        layerKind: ReconLayerKind,
+        screenshot: ByteArray,
+        analysis: PageAnalysis,
+    ): Int {
+        var newIndex = -1
+        update(id) { j ->
+            val idx = j.layers.size
+            val layer = ReconLayer(
+                job = j,
+                layerIndex = idx,
+                layerKind = layerKind,
+                atUrl = atUrl,
+            )
+            layer.screenshot = screenshot
+            layer.validationVerdict = analysis.verdict
+            layer.validationReasoning = analysis.reasoning
+            layer.targetJson = analysis.target?.let { objectMapper.writeValueAsString(it) }
+            j.layers.add(layer)
+            newIndex = idx
+        }
+        return newIndex
     }
 
     @Transactional
