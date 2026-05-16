@@ -92,7 +92,10 @@ class JobService(
             }
 
             val target = analysis.target
-                ?: throw MissingTargetException(analysis.verdict)
+            if (target == null) {
+                markFailed(id, "Analyzer returned verdict ${analysis.verdict} but did not produce a target")
+                return
+            }
 
             logTarget(target)
 
@@ -106,7 +109,11 @@ class JobService(
                 groundedness.unmatchedNames,
             )
             if (!groundedness.passes) {
-                throw HallucinatedTargetException(groundedness.matched, groundedness.total)
+                markFailed(
+                    id,
+                    "Target appears hallucinated: only ${groundedness.matched} of ${groundedness.total} values were found on the page",
+                )
+                return
             }
 
             update(id) {
@@ -215,11 +222,11 @@ class JobService(
 
     private fun checkGroundedness(target: Target, capture: PageCapture): GroundednessResult {
         val haystack = normalizeWhitespace(capture.visibleText)
-        val (matched, unmatched) = partitionGrounded(
-            target.fields.map { it.name to it.text },
-            haystack,
-        )
-        val total = matched.size + unmatched.size
+        val (matched, unmatched) = target.fields.partition {
+            val needle = normalizeWhitespace(it.text)
+            needle.isNotBlank() && haystack.contains(needle, ignoreCase = true)
+        }
+        val total = target.fields.size
         val required = when (target.type) {
             TargetType.SINGLE -> 1
             TargetType.MULTI -> maxOf(GROUNDEDNESS_MIN_MATCHES, (total + 1) / 2)
@@ -228,23 +235,9 @@ class JobService(
             matched = matched.size,
             total = total,
             required = required,
-            matchedNames = matched,
-            unmatchedNames = unmatched,
+            matchedNames = matched.map { it.name },
+            unmatchedNames = unmatched.map { it.name },
         )
-    }
-
-    private fun partitionGrounded(
-        entries: List<Pair<String, String>>,
-        haystack: String,
-    ): Pair<List<String>, List<String>> {
-        val matched = mutableListOf<String>()
-        val unmatched = mutableListOf<String>()
-        entries.forEach { (name, text) ->
-            val needle = normalizeWhitespace(text)
-            if (needle.isNotBlank() && haystack.contains(needle, ignoreCase = true)) matched += name
-            else unmatched += name
-        }
-        return matched to unmatched
     }
 
     private fun markFailed(id: UUID, message: String) {
@@ -278,14 +271,6 @@ class JobService(
 class JobNotFoundException(id: UUID) : RuntimeException("Job not found: $id")
 
 class ScreenshotNotAvailableException(id: UUID) : RuntimeException("Screenshot not yet available for job $id")
-
-class MissingTargetException(verdict: ValidationVerdict) :
-    RuntimeException("Analyzer returned verdict $verdict but did not produce a target")
-
-class HallucinatedTargetException(matched: Int, total: Int) :
-    RuntimeException(
-        "Target appears hallucinated: only $matched of $total values were found on the page",
-    )
 
 class InvalidJobStateException(id: UUID, actual: JobStatus, expected: JobStatus) :
     RuntimeException("Job $id is in state $actual but expected $expected")
