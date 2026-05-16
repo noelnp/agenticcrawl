@@ -16,13 +16,13 @@ import org.slf4j.LoggerFactory
 import org.slf4j.MDC
 import org.springframework.context.annotation.Lazy
 import org.springframework.stereotype.Service
-import org.springframework.transaction.annotation.Transactional
 import java.util.UUID
 import java.util.concurrent.ExecutorService
 
 @Service
 class JobService(
     private val jobRepository: JobRepository,
+    private val jobMutator: JobMutator,
     private val browserService: BrowserService,
     private val sessionManager: BrowserSessionManager,
     private val pageAnalyzer: PageAnalyzer,
@@ -42,24 +42,16 @@ class JobService(
         return saved
     }
 
-    @Transactional(readOnly = true)
-    fun get(id: UUID): Job =
-        jobRepository.findById(id).orElseThrow { JobNotFoundException(id) }
-            .also {
-                // Force-initialise lazy collections while still in the transaction
-                // so callers outside this method can read them.
-                it.layers.size
-                it.planSteps.size
-            }
+    fun get(id: UUID): Job = jobMutator.load(id)
 
     fun confirm(id: UUID): Job {
-        val current = get(id)
+        val current = jobMutator.load(id)
         if (current.status != JobStatus.AWAITING_CONFIRMATION) {
             throw InvalidJobStateException(id, current.status, JobStatus.AWAITING_CONFIRMATION)
         }
         val session = sessionManager.take(id)
             ?: throw SessionUnavailableException(id)
-        val updated = update(id) { it.status = JobStatus.RUNNING_PLAN }
+        val updated = jobMutator.mutate(id) { it.status = JobStatus.RUNNING_PLAN }
         log.info("status -> RUNNING_PLAN (confirmed)")
         jobExecutor.submit { withMdc(id) { runListingMapping(id, session) } }
         return updated
@@ -77,7 +69,7 @@ class JobService(
     private fun runListingRecon(id: UUID) {
         var session: LiveSession? = null
         try {
-            val job = update(id) { it.status = JobStatus.RUNNING_LISTING_RECON }
+            val job = jobMutator.mutate(id) { it.status = JobStatus.RUNNING_LISTING_RECON }
             log.info("status -> RUNNING_LISTING_RECON url={}", job.url)
 
             log.debug("opening browser session")
@@ -98,7 +90,7 @@ class JobService(
             )
 
             // Persist Layer 0 (LISTING) with the screenshot + analysis result.
-            update(id) { j ->
+            jobMutator.mutate(id) { j ->
                 val layer = ReconLayer(
                     job = j,
                     layerIndex = 0,
@@ -113,7 +105,7 @@ class JobService(
             }
 
             if (analysis.verdict == ValidationVerdict.ABSENT) {
-                update(id) {
+                jobMutator.mutate(id) {
                     it.status = JobStatus.SUCCEEDED
                     it.goalSatisfied = false
                 }
@@ -145,7 +137,7 @@ class JobService(
                 return
             }
 
-            update(id) { it.status = JobStatus.AWAITING_CONFIRMATION }
+            jobMutator.mutate(id) { it.status = JobStatus.AWAITING_CONFIRMATION }
             sessionManager.register(id, session, CONFIRMATION_TTL_SECONDS) {
                 onSessionExpired(id)
             }
@@ -201,7 +193,7 @@ class JobService(
                 log.warn("structure inference returned no result")
             }
 
-            update(id) { j ->
+            jobMutator.mutate(id) { j ->
                 val layer = j.layers.firstOrNull { it.layerIndex == 0 }
                     ?: error("listing layer missing on job $id")
                 layer.containerHtml = containerHtml
@@ -223,12 +215,12 @@ class JobService(
     private fun onSessionExpired(id: UUID) {
         withMdc(id) {
             try {
-                val job = get(id)
+                val job = jobMutator.load(id)
                 if (job.status != JobStatus.AWAITING_CONFIRMATION) {
                     log.debug("expiry no-op (status={})", job.status)
                     return@withMdc
                 }
-                update(id) {
+                jobMutator.mutate(id) {
                     it.status = JobStatus.EXPIRED
                     it.errorMessage = "Confirmation timeout"
                 }
@@ -239,16 +231,14 @@ class JobService(
         }
     }
 
-    @Transactional(readOnly = true)
     fun loadListingTarget(id: UUID): Target? {
-        val job = jobRepository.findById(id).orElseThrow { JobNotFoundException(id) }
+        val job = jobMutator.load(id)
         val layer = job.layers.firstOrNull { it.layerIndex == 0 } ?: return null
         return parseTarget(layer.targetJson)
     }
 
-    @Transactional(readOnly = true)
     fun loadLayerScreenshot(id: UUID, layerIndex: Int): ByteArray? {
-        val job = jobRepository.findById(id).orElseThrow { JobNotFoundException(id) }
+        val job = jobMutator.load(id)
         val layer = job.layers.firstOrNull { it.layerIndex == layerIndex }
             ?: throw LayerNotFoundException(id, layerIndex)
         return layer.screenshot
@@ -296,7 +286,7 @@ class JobService(
 
     fun markFailed(id: UUID, message: String) {
         runCatching {
-            update(id) {
+            jobMutator.mutate(id) {
                 it.status = JobStatus.FAILED
                 it.errorMessage = message
             }
@@ -305,7 +295,7 @@ class JobService(
     }
 
     fun markGoalSatisfied(id: UUID) {
-        update(id) {
+        jobMutator.mutate(id) {
             it.status = JobStatus.SUCCEEDED
             it.goalSatisfied = true
         }
@@ -319,7 +309,7 @@ class JobService(
         outcome: PlanOutcome,
         detail: String? = null,
     ) {
-        update(id) { j ->
+        jobMutator.mutate(id) { j ->
             val step = PlanStep(
                 job = j,
                 stepIndex = j.planSteps.size,
@@ -340,7 +330,7 @@ class JobService(
         analysis: PageAnalysis,
     ): Int {
         var newIndex = -1
-        update(id) { j ->
+        jobMutator.mutate(id) { j ->
             val idx = j.layers.size
             val layer = ReconLayer(
                 job = j,
@@ -356,13 +346,6 @@ class JobService(
             newIndex = idx
         }
         return newIndex
-    }
-
-    @Transactional
-    fun update(id: UUID, mutator: (Job) -> Unit): Job {
-        val job = jobRepository.findById(id).orElseThrow { JobNotFoundException(id) }
-        mutator(job)
-        return jobRepository.save(job)
     }
 
     private fun normalizeWhitespace(s: String): String =
