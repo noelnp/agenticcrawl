@@ -34,9 +34,15 @@ export interface FieldSelector {
   nth?: number | null;
 }
 
+export interface DetailLinkSelector {
+  selector: string;
+  nth?: number | null;
+}
+
 export interface ExtractedStructure {
   rowSelector: string;
   fields: FieldSelector[];
+  detailLink?: DetailLinkSelector | null;
 }
 
 export interface Job {

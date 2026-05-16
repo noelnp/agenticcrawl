@@ -263,6 +263,24 @@ function StructureBlock({ structure }: { structure: ExtractedStructure }) {
               </td>
             </tr>
           ))}
+          {structure.detailLink && (
+            <tr>
+              <th>detailLink</th>
+              <td>
+                <code>{structure.detailLink.selector}</code>{" "}
+                <span className="muted">
+                  ({[
+                    structure.detailLink.nth != null
+                      ? `nth: ${structure.detailLink.nth}`
+                      : null,
+                    "attr:href",
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")})
+                </span>
+              </td>
+            </tr>
+          )}
         </tbody>
       </table>
     </div>
