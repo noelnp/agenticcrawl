@@ -117,6 +117,11 @@ class SelectorMapper(chatClientBuilder: ChatClient.Builder) {
                land on different rungs — don't force symmetry, and don't pick nth just
                because a sibling needed it.
 
+            5. Emit a selector for EVERY field listed under "Fields:" — do not omit any.
+               If verification feedback says a field's value didn't match, refine the
+               selector (pick a different leaf, narrow with nth, switch source from
+               TEXT to an ATTRIBUTE that holds the value). Do not drop the field.
+
             For the row root, emit rowSelector — one own identifier of the row root that
             matches ONLY the root in this captured HTML (no descendants) and would also
             match peer rows on the page. Avoid per-instance IDs and classes reused on
@@ -169,8 +174,14 @@ class SelectorMapper(chatClientBuilder: ChatClient.Builder) {
             else -> null
         }
 
-        val fieldVerdicts = structure.fields.associate { fs ->
-            fs.name to verifyField(rowRoot, fs, expectedByName[fs.name])
+        val emittedByName = structure.fields.associateBy { it.name }
+        val fieldVerdicts = fields.associate { tf ->
+            val fs = emittedByName[tf.name]
+            tf.name to if (fs == null) {
+                FieldVerdict(false, "no selector emitted for field '${tf.name}' — every target field must be mapped, refine instead of dropping")
+            } else {
+                verifyField(rowRoot, fs, expectedByName[tf.name])
+            }
         }
         val detailLinkVerdict = structure.detailLink?.let { verifyDetailLink(rowRoot, it) }
         return VerificationResult(rowValid, rowReason, fieldVerdicts, detailLinkVerdict)
@@ -213,7 +224,10 @@ class SelectorMapper(chatClientBuilder: ChatClient.Builder) {
             is ValueSource.Attribute -> element.attr(src.name)
         }
         val actualNorm = normalize(actual)
-        return if (actualNorm == expected || actualNorm.contains(expected, ignoreCase = false) || expected.contains(actualNorm, ignoreCase = false)) {
+        val valueMatches = actualNorm.equals(expected, ignoreCase = true) ||
+            actualNorm.contains(expected, ignoreCase = true) ||
+            expected.contains(actualNorm, ignoreCase = true)
+        return if (valueMatches) {
             FieldVerdict(true, null)
         } else {
             FieldVerdict(
@@ -262,8 +276,12 @@ class SelectorMapper(chatClientBuilder: ChatClient.Builder) {
         if (IMAGE_EXTENSIONS.any { pathOnly.endsWith(it) }) {
             return FieldVerdict(false, "detailLink href '$href' points at an image asset")
         }
-        if (element.text().isBlank()) {
-            return FieldVerdict(false, "detailLink <a> wraps no visible text (likely an image-only / icon link)")
+        val children = element.children()
+        val onlyImageContent = element.text().isBlank() &&
+            children.isNotEmpty() &&
+            children.all { it.tagName().lowercase() in IMAGE_LIKE_TAGS }
+        if (onlyImageContent) {
+            return FieldVerdict(false, "detailLink <a> wraps only an image/icon (image link), not a navigational text anchor")
         }
         return FieldVerdict(true, null)
     }
@@ -350,6 +368,7 @@ class SelectorMapper(chatClientBuilder: ChatClient.Builder) {
 
         val BAD_HREF_PREFIXES = listOf("#", "javascript:", "mailto:", "tel:")
         val IMAGE_EXTENSIONS = listOf(".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico", ".avif")
+        val IMAGE_LIKE_TAGS = setOf("img", "svg", "picture")
 
         val DETAIL_LINK_INSTRUCTIONS = """
 
@@ -365,11 +384,16 @@ class SelectorMapper(chatClientBuilder: ChatClient.Builder) {
                 in that case detailLink.selector can equal rowSelector).
               - Selector follows the same rules as field selectors (rules 1–4
                 above): one own identifier on the leaf, prefer class / data-testid,
-                nth only as last resort. Use nth ONLY if nothing on the leaf is
-                unique within the row.
-              - The <a> must wrap visible text (the row title or main label).
-                EXCLUDE <a> elements that wrap only an image, an icon, a favourite
-                / share / preview button, or a category badge.
+                nth only as last resort.
+              - Accept anchors that wrap the row title text. ALSO accept the
+                "stretched-link" pattern: an <a> with empty inner content (no text,
+                no children) whose href goes to the item page and whose
+                aria-label / title names the item — this is a common modern row
+                wrapper and is usually the right pick when present.
+              - EXCLUDE <a> elements whose only inner content is an <img>, <svg>,
+                or <picture> (icon / thumbnail nav).
+              - EXCLUDE favourite / share / preview / save buttons and category
+                badges, even when rendered as <a>.
               - The href must be a navigational URL. EXCLUDE:
                   * fragment anchors ('#...')
                   * 'javascript:', 'mailto:', 'tel:' protocols
