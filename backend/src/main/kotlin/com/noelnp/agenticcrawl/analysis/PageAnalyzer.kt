@@ -56,6 +56,21 @@ class PageAnalyzer(chatClientBuilder: ChatClient.Builder) {
                 visible text copied exactly. Names must be consistent with
                 what other rows would also provide.
 
+                Row-field test: a value qualifies as a row field only if it
+                would CHANGE for the row immediately above or below the one
+                you picked. Look at the neighbouring rows in the screenshot —
+                if both share the same value, that value is NOT row-level; it
+                belongs to a section/header above the rows. EXCLUDE it.
+
+                Common exclusions (NOT row fields, even when visually near a
+                row):
+                  - Section / group / category headers shared by many rows
+                    (league names, store categories, date dividers like
+                    "Today")
+                  - Column or table headers
+                  - Page-wide filters, tabs, breadcrumbs, sort indicators
+                  - Pagination text ("Page 1 of 12", "Showing 1–20")
+
             CRITICAL RULES — read carefully:
             - Only return text you can clearly read in the screenshot.
             - Do not invent, guess, or infer text based on what you would
