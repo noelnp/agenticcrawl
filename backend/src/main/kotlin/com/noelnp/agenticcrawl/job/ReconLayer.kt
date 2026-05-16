@@ -3,8 +3,6 @@ package com.noelnp.agenticcrawl.job
 import com.noelnp.agenticcrawl.analysis.ValidationVerdict
 import jakarta.persistence.Column
 import jakarta.persistence.Entity
-import jakarta.persistence.EnumType
-import jakarta.persistence.Enumerated
 import jakarta.persistence.FetchType
 import jakarta.persistence.GeneratedValue
 import jakarta.persistence.Id
@@ -27,7 +25,6 @@ class ReconLayer(
     @Column(name = "layer_index", nullable = false)
     val layerIndex: Int,
 
-    @Enumerated(EnumType.STRING)
     @Column(name = "layer_kind", nullable = false, length = 32)
     val layerKind: ReconLayerKind,
 
@@ -43,7 +40,6 @@ class ReconLayer(
     @Column(name = "screenshot")
     var screenshot: ByteArray? = null
 
-    @Enumerated(EnumType.STRING)
     @Column(name = "validation_verdict", length = 16)
     var validationVerdict: ValidationVerdict? = null
 
