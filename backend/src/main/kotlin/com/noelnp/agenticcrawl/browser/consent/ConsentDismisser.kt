@@ -1,5 +1,6 @@
 package com.noelnp.agenticcrawl.browser.consent
 
+import com.microsoft.playwright.Frame
 import com.microsoft.playwright.Locator
 import com.microsoft.playwright.Page
 import org.slf4j.LoggerFactory
@@ -16,12 +17,16 @@ class ConsentDismisser(private val properties: ConsentProperties) {
         }
 
         log.debug(
-            "starting consent dismissal maxPasses={} pause={}ms reject={} accept={}",
+            "starting consent dismissal maxPasses={} pause={}ms reject={} accept={} modifiers={} frameWaitMs={}",
             properties.maxPasses,
             properties.pauseBetweenPassesMs,
             properties.rejectPatterns.size,
             properties.acceptPatterns.size,
+            properties.rejectModifiers.size,
+            properties.frameWaitMs,
         )
+
+        waitForCandidateFrame(page)
 
         val dismissed = mutableListOf<DismissalRecord>()
         var consecutiveMisses = 0
@@ -52,52 +57,108 @@ class ConsentDismisser(private val properties: ConsentProperties) {
         return dismissed
     }
 
-    private fun tryOnce(page: Page): DismissalRecord? =
-        tryPatterns(page, ConsentIntent.REJECT, properties.rejectPatterns)
-            ?: tryPatterns(page, ConsentIntent.ACCEPT, properties.acceptPatterns)
+    private fun waitForCandidateFrame(page: Page) {
+        val budget = properties.frameWaitMs
+        if (budget <= 0) return
+        val deadline = System.currentTimeMillis() + budget
+        while (System.currentTimeMillis() < deadline) {
+            if (page.frames().any { frameHasMatch(it) }) {
+                log.debug("consent: candidate frame ready")
+                return
+            }
+            page.waitForTimeout(200.0)
+        }
+        log.debug("consent: no candidate frame within {}ms, proceeding anyway", budget)
+    }
 
-    private fun tryPatterns(
-        page: Page,
-        intent: ConsentIntent,
-        patterns: List<String>,
-    ): DismissalRecord? {
-        for (pattern in patterns) {
-            val match = findClickable(page, pattern) ?: continue
-            val (locator, kind) = match
-            log.debug("consent: {} match pattern='{}' kind={}", intent, pattern, kind)
-            val clicked = runCatching {
-                locator.click(Locator.ClickOptions().setTimeout(properties.clickTimeoutMs.toDouble()))
+    private fun frameHasMatch(frame: Frame): Boolean {
+        val texts = readCandidateTexts(frame)
+        return texts.any { it.isNotBlank() && classify(it) != null }
+    }
+
+    private fun tryOnce(page: Page): DismissalRecord? {
+        for (frame in page.frames()) {
+            val record = tryFrame(frame) ?: continue
+            return record
+        }
+        return null
+    }
+
+    private fun tryFrame(frame: Frame): DismissalRecord? {
+        val texts = readCandidateTexts(frame)
+        if (texts.isEmpty()) return null
+
+        var acceptPick: Pick? = null
+        for ((index, text) in texts.withIndex()) {
+            if (text.isBlank()) continue
+            val classification = classify(text) ?: continue
+            when (classification.intent) {
+                ConsentIntent.REJECT -> {
+                    val record = click(frame, index, classification)
+                    if (record != null) return record
+                }
+                ConsentIntent.ACCEPT -> if (acceptPick == null) acceptPick = Pick(index, classification)
             }
-            if (clicked.isSuccess) {
-                log.info("consent: clicked intent={} pattern='{}' kind={}", intent, pattern, kind)
-                return DismissalRecord(intent = intent, pattern = pattern, role = kind)
+        }
+        return acceptPick?.let { click(frame, it.index, it.classification) }
+    }
+
+    private fun readCandidateTexts(frame: Frame): List<String> {
+        val raw = runCatching { frame.locator(CANDIDATE_SELECTOR).evaluateAll(READ_TEXT_JS) }.getOrNull()
+        @Suppress("UNCHECKED_CAST")
+        return (raw as? List<String>) ?: emptyList()
+    }
+
+    private fun classify(text: String): Classification? {
+        for (pattern in properties.rejectPatterns) {
+            if (pattern in text) return Classification(ConsentIntent.REJECT, pattern)
+        }
+        for (pattern in properties.acceptPatterns) {
+            if (pattern in text) {
+                val modifier = properties.rejectModifiers.firstOrNull { it in text }
+                return if (modifier != null) {
+                    Classification(ConsentIntent.REJECT, "$pattern+$modifier")
+                } else {
+                    Classification(ConsentIntent.ACCEPT, pattern)
+                }
             }
-            log.debug(
-                "consent: matched '{}' as {} but click failed: {}",
-                pattern,
-                kind,
-                clicked.exceptionOrNull()?.message,
+        }
+        return null
+    }
+
+    private fun click(frame: Frame, index: Int, classification: Classification): DismissalRecord? {
+        val locator = frame.locator(CANDIDATE_SELECTOR).nth(index)
+        val role = runCatching { locator.evaluate("e => e.tagName.toLowerCase()") as? String }.getOrNull() ?: "?"
+        val frameUrl = runCatching { frame.url() }.getOrNull()?.takeIf { it.isNotBlank() } ?: "(main)"
+        log.debug(
+            "consent: {} match pattern='{}' role={} frame={}",
+            classification.intent, classification.pattern, role, frameUrl,
+        )
+        val result = runCatching {
+            locator.click(Locator.ClickOptions().setTimeout(properties.clickTimeoutMs.toDouble()))
+        }
+        if (result.isSuccess) {
+            log.info(
+                "consent: clicked intent={} pattern='{}' role={} frame={}",
+                classification.intent, classification.pattern, role, frameUrl,
             )
+            return DismissalRecord(intent = classification.intent, pattern = classification.pattern, role = role)
         }
+        log.debug(
+            "consent: matched '{}' as {} but click failed: {}",
+            classification.pattern,
+            role,
+            result.exceptionOrNull()?.message,
+        )
         return null
     }
 
-    private fun findClickable(page: Page, pattern: String): Pair<Locator, String>? {
-        val escaped = pattern.replace("\\", "\\\\").replace("'", "\\'")
-        for ((selector, kind) in CLICKABLE_VARIANTS) {
-            val locator = page.locator("$selector:has-text('$escaped'):visible")
-            if (locator.count() > 0) {
-                return locator.first() to kind
-            }
-        }
-        return null
-    }
+    private data class Classification(val intent: ConsentIntent, val pattern: String)
+    private data class Pick(val index: Int, val classification: Classification)
 
     private companion object {
-        val CLICKABLE_VARIANTS = listOf(
-            "button" to "button",
-            "[role='button']" to "button",
-            "a" to "link",
-        )
+        const val CANDIDATE_SELECTOR = "button:visible, [role='button']:visible, a:visible"
+        const val READ_TEXT_JS =
+            "els => els.map(e => (e.innerText || e.getAttribute('aria-label') || '').toLowerCase().trim())"
     }
 }

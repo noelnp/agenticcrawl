@@ -57,23 +57,33 @@ agenticcrawl:
     max-passes: 3
     pause-between-passes-ms: 500
     click-timeout-ms: 2000
+    frame-wait-ms: 2000
     reject-patterns:
-      - "reject"
-      - "decline"
-      - "only necessary"
-      - "necessary only"
       - "avvisa"
       - "endast nödvändiga"
+      - "bara nödvändiga"
+      - "reject"
+      - "decline"
+      - "refuse"
+      - "disagree"
+      - "only necessary"
+      - "necessary only"
     accept-patterns:
-      - "accept"
-      - "allow all"
-      - "agree"
-      - "consent"
-      - "got it"
-      - "i understand"
-      - "acceptera"
       - "godkänn"
+      - "acceptera"
       - "jag förstår"
+      - "accept"
+      - "allow"
+      - "agree"
+      - "i understand"
+      - "got it"
+    reject-modifiers:
+      - "inte"
+      - "endast"
+      - "nödvändig"
+      - "not"
+      - "only"
+      - "necessary"
 
 logging:
   level:
