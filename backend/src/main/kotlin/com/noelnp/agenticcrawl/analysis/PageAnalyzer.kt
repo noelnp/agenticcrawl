@@ -2,20 +2,12 @@ package com.noelnp.agenticcrawl.analysis
 
 import com.fasterxml.jackson.annotation.JsonProperty
 import org.slf4j.LoggerFactory
-import org.springframework.ai.chat.client.ChatClient
-import org.springframework.ai.openai.OpenAiChatOptions
-import org.springframework.core.io.ByteArrayResource
 import org.springframework.stereotype.Service
-import org.springframework.util.MimeTypeUtils
 
 @Service
-class PageAnalyzer(chatClientBuilder: ChatClient.Builder) {
+class PageAnalyzer(private val llm: LlmClient) {
 
-    private val chatClient = chatClientBuilder.build()
     private val log = LoggerFactory.getLogger(javaClass)
-
-    private val deterministicOptions: OpenAiChatOptions =
-        OpenAiChatOptions.builder().temperature(0.0).build()
 
     fun analyze(description: String, screenshot: ByteArray): PageAnalysis {
         log.debug("calling analyzer descriptionLen={} bytes={}", description.length, screenshot.size)
@@ -111,14 +103,7 @@ class PageAnalyzer(chatClientBuilder: ChatClient.Builder) {
                   ] }
         """.trimIndent()
 
-        val raw = chatClient.prompt()
-            .options(deterministicOptions)
-            .user { spec ->
-                spec.text(instructions)
-                    .media(MimeTypeUtils.IMAGE_PNG, ByteArrayResource(screenshot))
-            }
-            .call()
-            .entity(RawAnalysis::class.java)
+        val raw = llm.jsonWithImage(instructions, screenshot, RawAnalysis::class.java)
             ?: error("empty response from chat model")
 
         val target = raw.target?.toTarget()

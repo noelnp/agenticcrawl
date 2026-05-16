@@ -4,18 +4,12 @@ import com.fasterxml.jackson.annotation.JsonProperty
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import org.slf4j.LoggerFactory
-import org.springframework.ai.chat.client.ChatClient
-import org.springframework.ai.openai.OpenAiChatOptions
 import org.springframework.stereotype.Service
 
 @Service
-class DetailLinkFinder(chatClientBuilder: ChatClient.Builder) {
+class DetailLinkFinder(private val llm: LlmClient) {
 
-    private val chatClient = chatClientBuilder.build()
     private val log = LoggerFactory.getLogger(javaClass)
-
-    private val deterministicOptions: OpenAiChatOptions =
-        OpenAiChatOptions.builder().temperature(0.0).build()
 
     fun find(rowHtml: String, fields: List<TargetField>): DetailLinkSelector? {
         if (rowHtml.isBlank()) return null
@@ -94,13 +88,7 @@ class DetailLinkFinder(chatClientBuilder: ChatClient.Builder) {
         """.trimIndent()
 
         return runCatching {
-            chatClient.prompt()
-                .options(deterministicOptions)
-                .user(instructions)
-                .call()
-                .entity(Response::class.java)
-                ?.detailLink
-                ?.toDetailLinkSelector()
+            llm.json(instructions, Response::class.java)?.detailLink?.toDetailLinkSelector()
         }.onFailure { log.warn("LLM call failed: {}", it.message) }.getOrNull()
     }
 

@@ -4,18 +4,12 @@ import com.fasterxml.jackson.annotation.JsonProperty
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import org.slf4j.LoggerFactory
-import org.springframework.ai.chat.client.ChatClient
-import org.springframework.ai.openai.OpenAiChatOptions
 import org.springframework.stereotype.Service
 
 @Service
-class SelectorMapper(chatClientBuilder: ChatClient.Builder) {
+class SelectorMapper(private val llm: LlmClient) {
 
-    private val chatClient = chatClientBuilder.build()
     private val log = LoggerFactory.getLogger(javaClass)
-
-    private val deterministicOptions: OpenAiChatOptions =
-        OpenAiChatOptions.builder().temperature(0.0).build()
 
     fun map(rowHtml: String, fields: List<TargetField>, type: TargetType): ExtractedStructure? {
         if (rowHtml.isBlank() || fields.isEmpty()) return null
@@ -133,12 +127,7 @@ class SelectorMapper(chatClientBuilder: ChatClient.Builder) {
         """.trimIndent()
 
         return runCatching {
-            chatClient.prompt()
-                .options(deterministicOptions)
-                .user(instructions)
-                .call()
-                .entity(RawStructure::class.java)
-                ?.toExtractedStructure()
+            llm.json(instructions, RawStructure::class.java)?.toExtractedStructure()
         }.onFailure { log.warn("LLM call failed: {}", it.message) }.getOrNull()
     }
 
