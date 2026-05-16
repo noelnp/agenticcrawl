@@ -5,6 +5,7 @@ import com.microsoft.playwright.BrowserContext
 import com.microsoft.playwright.Locator
 import com.microsoft.playwright.Page
 import com.microsoft.playwright.Playwright
+import com.noelnp.agenticcrawl.browser.consent.ConsentDismisser
 import org.slf4j.LoggerFactory
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.TimeUnit
@@ -15,11 +16,36 @@ class LiveSession internal constructor(
     private val browser: Browser,
     private val context: BrowserContext,
     private val page: Page,
+    private val consentDismisser: ConsentDismisser,
+    private val properties: BrowserProperties,
 ) : AutoCloseable {
     private val log = LoggerFactory.getLogger(javaClass)
 
     @Volatile
     private var closed = false
+
+    fun currentUrl(): String = onSessionThread { page.url() }
+
+    fun navigateTo(url: String): Boolean = onSessionThread {
+        log.info("navigating to {}", url)
+        try {
+            page.navigate(
+                url,
+                Page.NavigateOptions()
+                    .setWaitUntil(properties.waitUntil)
+                    .setTimeout(properties.navigationTimeoutMs),
+            )
+            page.waitForTimeout(properties.postLoadSettleMs)
+            val dismissed = consentDismisser.dismiss(page)
+            if (dismissed.isNotEmpty()) {
+                page.waitForTimeout(properties.postDismissSettleMs)
+            }
+            true
+        } catch (e: Exception) {
+            log.error("navigateTo({}) failed: {}", url, e.message, e)
+            false
+        }
+    }
 
     fun capture(): PageCapture = onSessionThread {
         val screenshot = page.screenshot(

@@ -57,7 +57,7 @@ class BrowserService(
                     page.waitForTimeout(properties.postDismissSettleMs)
                 }
 
-                LiveSession(executor, playwright, browser, context, page)
+                LiveSession(executor, playwright, browser, context, page, consentDismisser, properties)
             }.get()
         } catch (e: Exception) {
             executor.shutdownNow()
