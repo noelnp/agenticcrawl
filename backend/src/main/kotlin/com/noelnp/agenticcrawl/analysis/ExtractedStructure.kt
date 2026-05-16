@@ -27,4 +27,10 @@ data class FieldSelector(
 data class ExtractedStructure(
     val rowSelector: String,
     val fields: List<FieldSelector>,
+    val detailLink: DetailLinkSelector? = null,
+)
+
+data class DetailLinkSelector(
+    val selector: String,
+    val nth: Int? = null,
 )
