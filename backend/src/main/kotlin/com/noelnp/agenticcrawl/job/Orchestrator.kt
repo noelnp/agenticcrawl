@@ -212,18 +212,9 @@ class Orchestrator(
             )
         }
         if (!click.urlChanged) {
-            return failStep(
-                jobId,
-                action = PlanAction.CLICK_TO_REVEAL,
-                reasoning = reasoning,
-                detail = "clicked '${target.label}' but URL did not change (${click.currentUrl})",
-                jobFailMessage = "click '${target.label}' had no navigation effect",
-                actionData = mapOf(
-                    "label" to target.label,
-                    "previousUrl" to click.previousUrl,
-                    "currentUrl" to click.currentUrl,
-                    "urlChanged" to false,
-                ),
+            log.info(
+                "click '{}' succeeded with no URL change — capturing anyway, the reveal may be inline (accordion / DOM swap)",
+                target.label,
             )
         }
 
@@ -248,13 +239,13 @@ class Orchestrator(
             action = PlanAction.CLICK_TO_REVEAL,
             reasoning = reasoning,
             outcome = PlanOutcome.SUCCESS,
-            detail = "clicked '${target.label}' → layer $newIndex at $landedAt (verdict=${analysis.verdict})",
+            detail = "clicked '${target.label}' → layer $newIndex at $landedAt (verdict=${analysis.verdict}, urlChanged=${click.urlChanged})",
             actionDataJson = jsonOrNull(
                 mapOf(
                     "label" to target.label,
                     "previousUrl" to click.previousUrl,
                     "currentUrl" to landedAt,
-                    "urlChanged" to true,
+                    "urlChanged" to click.urlChanged,
                 ),
             ),
         )
