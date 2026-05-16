@@ -35,24 +35,14 @@ class SelectorMapper(chatClientBuilder: ChatClient.Builder) {
             lastAttempt = structure
             val verification = verify(rowRoot, fields, structure)
             if (verification.allValid) {
-                val accepted = applyDetailLinkVerdict(structure, verification.detailLinkVerdict)
-                log.info("selectors verified on attempt {} rowSelector='{}'", attempt + 1, accepted.rowSelector)
-                return accepted
+                log.info("selectors verified on attempt {} rowSelector='{}'", attempt + 1, structure.rowSelector)
+                return structure
             }
             log.warn("selectors failed verification (attempt {}): {}", attempt + 1, verification.summary())
             feedback = verification.feedbackPrompt()
         }
         log.warn("returning last LLM attempt without successful verification")
         return lastAttempt
-    }
-
-    private fun applyDetailLinkVerdict(
-        structure: ExtractedStructure,
-        verdict: FieldVerdict?,
-    ): ExtractedStructure {
-        if (verdict == null || verdict.valid) return structure
-        log.warn("dropping invalid detailLink: {}", verdict.reason)
-        return structure.copy(detailLink = null)
     }
 
     private fun callLlm(
@@ -67,10 +57,6 @@ class SelectorMapper(chatClientBuilder: ChatClient.Builder) {
             TargetType.SINGLE -> "This is a single value on the page (not part of a repeating list). The rowSelector still matches the captured element root, but no iteration is implied."
         }
         val feedbackBlock = feedback?.let { "\n\nPrevious attempt had problems:\n$it\n\nFix these and try again." } ?: ""
-        val detailLinkBlock = if (type == TargetType.MULTI) DETAIL_LINK_INSTRUCTIONS else ""
-        val detailLinkSchema = if (type == TargetType.MULTI) {
-            ",\n              \"detailLink\": { \"selector\": \"...\", \"nth\": null }"
-        } else ""
 
         val instructions = """
             You map field names to CSS selectors from one row of captured HTML. The values
@@ -126,7 +112,7 @@ class SelectorMapper(chatClientBuilder: ChatClient.Builder) {
             matches ONLY the root in this captured HTML (no descendants) and would also
             match peer rows on the page. Avoid per-instance IDs and classes reused on
             descendants.
-            $detailLinkBlock
+
             Row HTML:
             ```
             $rowHtml
@@ -142,7 +128,7 @@ class SelectorMapper(chatClientBuilder: ChatClient.Builder) {
                 { "name": "...", "selector": "...", "source": { "from": "TEXT" } },
                 { "name": "...", "selector": "...", "source": { "from": "ATTRIBUTE", "name": "alt" } },
                 { "name": "...", "selector": "...", "source": { "from": "TEXT" }, "nth": 1 }
-              ]$detailLinkSchema
+              ]
             }
         """.trimIndent()
 
@@ -183,8 +169,7 @@ class SelectorMapper(chatClientBuilder: ChatClient.Builder) {
                 verifyField(rowRoot, fs, expectedByName[tf.name])
             }
         }
-        val detailLinkVerdict = structure.detailLink?.let { verifyDetailLink(rowRoot, it) }
-        return VerificationResult(rowValid, rowReason, fieldVerdicts, detailLinkVerdict)
+        return VerificationResult(rowValid, rowReason, fieldVerdicts)
     }
 
     private fun verifyField(
@@ -237,55 +222,6 @@ class SelectorMapper(chatClientBuilder: ChatClient.Builder) {
         }
     }
 
-    private fun verifyDetailLink(rowRoot: Element, dl: DetailLinkSelector): FieldVerdict {
-        val matches = runCatching { rowRoot.select(dl.selector) }.getOrNull()
-            ?: return FieldVerdict(false, "detailLink selector '${dl.selector}' is invalid CSS")
-        // Allow the row root itself to be the anchor.
-        val candidates = matches.toList()
-        if (candidates.isEmpty()) {
-            return FieldVerdict(false, "detailLink selector '${dl.selector}' matched 0 elements")
-        }
-        val element = when (val nth = dl.nth) {
-            null -> {
-                if (candidates.size > 1) {
-                    return FieldVerdict(
-                        false,
-                        "detailLink selector '${dl.selector}' matched ${candidates.size} elements; narrow it or set nth",
-                    )
-                }
-                candidates[0]
-            }
-            else -> candidates.getOrNull(nth)
-                ?: return FieldVerdict(
-                    false,
-                    "detailLink nth=$nth out of range; selector matched ${candidates.size} elements",
-                )
-        }
-        if (element.tagName().lowercase() != "a") {
-            return FieldVerdict(false, "detailLink target is <${element.tagName()}>, not <a>")
-        }
-        val href = element.attr("href")
-        if (href.isBlank()) {
-            return FieldVerdict(false, "detailLink <a> has empty href")
-        }
-        val lowerHref = href.lowercase()
-        if (BAD_HREF_PREFIXES.any { lowerHref.startsWith(it) }) {
-            return FieldVerdict(false, "detailLink href '$href' is not a navigational URL")
-        }
-        val pathOnly = lowerHref.substringBefore('?').substringBefore('#')
-        if (IMAGE_EXTENSIONS.any { pathOnly.endsWith(it) }) {
-            return FieldVerdict(false, "detailLink href '$href' points at an image asset")
-        }
-        val children = element.children()
-        val onlyImageContent = element.text().isBlank() &&
-            children.isNotEmpty() &&
-            children.all { it.tagName().lowercase() in IMAGE_LIKE_TAGS }
-        if (onlyImageContent) {
-            return FieldVerdict(false, "detailLink <a> wraps only an image/icon (image link), not a navigational text anchor")
-        }
-        return FieldVerdict(true, null)
-    }
-
     private fun describeMatches(elements: List<Element>): String =
         elements.mapIndexed { i, el -> "[$i] <${el.tagName()}> ${quoted(el.text().take(40))}" }
             .joinToString(", ")
@@ -301,7 +237,6 @@ class SelectorMapper(chatClientBuilder: ChatClient.Builder) {
         val rowSelectorValid: Boolean,
         val rowSelectorReason: String?,
         val fieldVerdicts: Map<String, FieldVerdict>,
-        val detailLinkVerdict: FieldVerdict?,
     ) {
         val allValid: Boolean
             get() = rowSelectorValid && fieldVerdicts.values.all { it.valid }
@@ -310,7 +245,6 @@ class SelectorMapper(chatClientBuilder: ChatClient.Builder) {
             val parts = mutableListOf<String>()
             if (!rowSelectorValid) parts += rowSelectorReason ?: "rowSelector invalid"
             fieldVerdicts.forEach { (name, v) -> if (!v.valid) parts += "[$name] ${v.reason}" }
-            detailLinkVerdict?.takeIf { !it.valid }?.let { parts += "[detailLink] ${it.reason}" }
             return parts.joinToString("; ")
         }
 
@@ -318,9 +252,6 @@ class SelectorMapper(chatClientBuilder: ChatClient.Builder) {
             if (!rowSelectorValid) append("- rowSelector: ${rowSelectorReason}\n")
             fieldVerdicts.forEach { (name, v) ->
                 if (!v.valid) append("- field $name: ${v.reason}\n")
-            }
-            detailLinkVerdict?.takeIf { !it.valid }?.let {
-                append("- detailLink: ${it.reason}\n")
             }
         }.trimEnd()
     }
@@ -330,12 +261,10 @@ class SelectorMapper(chatClientBuilder: ChatClient.Builder) {
     private data class RawStructure(
         @JsonProperty("rowSelector") val rowSelector: String,
         @JsonProperty("fields") val fields: List<RawField>,
-        @JsonProperty("detailLink") val detailLink: RawDetailLink? = null,
     ) {
         fun toExtractedStructure() = ExtractedStructure(
             rowSelector = rowSelector,
             fields = fields.map { FieldSelector(it.name, it.selector, it.source.toValueSource(), it.nth) },
-            detailLink = detailLink?.let { DetailLinkSelector(it.selector, it.nth) },
         )
     }
 
@@ -357,50 +286,8 @@ class SelectorMapper(chatClientBuilder: ChatClient.Builder) {
         }
     }
 
-    private data class RawDetailLink(
-        @JsonProperty("selector") val selector: String,
-        @JsonProperty("nth") val nth: Int? = null,
-    )
-
     private companion object {
         const val MAX_RETRIES = 2
         val WHITESPACE_REGEX = Regex("[\\p{Zs}\\s]+")
-
-        val BAD_HREF_PREFIXES = listOf("#", "javascript:", "mailto:", "tel:")
-        val IMAGE_EXTENSIONS = listOf(".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico", ".avif")
-        val IMAGE_LIKE_TAGS = setOf("img", "svg", "picture")
-
-        val DETAIL_LINK_INSTRUCTIONS = """
-
-            DETAIL LINK (optional):
-
-            Also emit a `detailLink` if this row links to its own detail page on the
-            same site — e.g. a product card → product page, a match listing → match
-            page, an article preview → article page. Pick the row's PRIMARY
-            navigational anchor.
-
-            Rules:
-              - Must point at an <a> element (the row root itself may be the <a>;
-                in that case detailLink.selector can equal rowSelector).
-              - Selector follows the same rules as field selectors (rules 1–4
-                above): one own identifier on the leaf, prefer class / data-testid,
-                nth only as last resort.
-              - Accept anchors that wrap the row title text. ALSO accept the
-                "stretched-link" pattern: an <a> with empty inner content (no text,
-                no children) whose href goes to the item page and whose
-                aria-label / title names the item — this is a common modern row
-                wrapper and is usually the right pick when present.
-              - EXCLUDE <a> elements whose only inner content is an <img>, <svg>,
-                or <picture> (icon / thumbnail nav).
-              - EXCLUDE favourite / share / preview / save buttons and category
-                badges, even when rendered as <a>.
-              - The href must be a navigational URL. EXCLUDE:
-                  * fragment anchors ('#...')
-                  * 'javascript:', 'mailto:', 'tel:' protocols
-                  * URLs ending in image / icon extensions (.png .jpg .jpeg .gif
-                    .webp .svg .ico .avif), with or without a query string
-
-            If no such anchor exists in the row, omit `detailLink` entirely.
-        """.trimIndent()
     }
 }

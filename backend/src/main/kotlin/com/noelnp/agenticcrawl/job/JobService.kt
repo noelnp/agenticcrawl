@@ -1,6 +1,7 @@
 package com.noelnp.agenticcrawl.job
 
 import com.fasterxml.jackson.databind.ObjectMapper
+import com.noelnp.agenticcrawl.analysis.DetailLinkFinder
 import com.noelnp.agenticcrawl.analysis.PageAnalyzer
 import com.noelnp.agenticcrawl.analysis.SelectorMapper
 import com.noelnp.agenticcrawl.analysis.Target
@@ -23,6 +24,7 @@ class JobService(
     private val sessionManager: BrowserSessionManager,
     private val pageAnalyzer: PageAnalyzer,
     private val selectorMapper: SelectorMapper,
+    private val detailLinkFinder: DetailLinkFinder,
     private val jobExecutor: ExecutorService,
     private val objectMapper: ObjectMapper,
 ) {
@@ -155,13 +157,22 @@ class JobService(
 
             val structure = containerHtml
                 ?.takeIf { it.isNotBlank() }
-                ?.let { selectorMapper.map(it, target.fields, target.type) }
+                ?.let { html ->
+                    val base = selectorMapper.map(html, target.fields, target.type) ?: return@let null
+                    if (target.type == TargetType.MULTI) {
+                        val link = detailLinkFinder.find(html, target.fields)
+                        base.copy(detailLink = link)
+                    } else {
+                        base
+                    }
+                }
             val structureJson = structure?.let { objectMapper.writeValueAsString(it) }
             if (structure != null) {
                 log.info(
-                    "structure rowSelector='{}' fields={}",
+                    "structure rowSelector='{}' fields={} detailLink={}",
                     structure.rowSelector,
                     structure.fields.joinToString { "${it.name}->${it.selector}" },
+                    structure.detailLink?.let { "${it.selector}${it.nth?.let { n -> " nth=$n" }.orEmpty()}" } ?: "none",
                 )
             } else if (!containerHtml.isNullOrBlank()) {
                 log.warn("structure inference returned no result")
