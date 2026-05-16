@@ -121,6 +121,108 @@ class PageAnalyzer(private val llm: LlmClient) {
         return analysis
     }
 
+    /**
+     * Verification-mode analysis for follow-up layers (after we've navigated or
+     * clicked during recon). Unlike [analyze], this does not try to discover
+     * any prominent repeating pattern on the page — it asks "is the user's
+     * specific request visible here?" and prefers PARTIAL over making up a
+     * target when something is structurally similar but semantically different.
+     */
+    fun verifyRequest(description: String, screenshot: ByteArray): PageAnalysis {
+        log.debug("calling verifier descriptionLen={} bytes={}", description.length, screenshot.size)
+
+        val instructions = """
+            You are verifying whether information requested by a user is visible on
+            this screenshot of a web page. The page was reached during automated
+            reconnaissance — we arrived here from a previous page in the same flow.
+
+            User request:
+            ---
+            $description
+            ---
+
+            Decide a verdict for what THIS screenshot offers:
+
+              PRESENT — the requested information is clearly visible. Identify ONLY
+                        the fields/values that directly satisfy the request. If the
+                        info is a repeating list of items the user asked for, emit
+                        type=MULTI with ONE row's fields. If a single value,
+                        type=SINGLE.
+
+              PARTIAL — the page is related to the user's request (same site, same
+                        topic, same item) but the specific information they asked
+                        for is NOT yet visible on this screenshot. It may live
+                        behind a tab, a button, an accordion, or further down the
+                        page — but it is not on screen now.
+
+              ABSENT  — the page does not relate to the user's request.
+
+            CRITICAL VERIFICATION RULES:
+
+            - Do NOT seize on the most prominent repeating pattern on the page just
+              because it looks structurally like a list. Only emit fields when the
+              values they hold are *exactly* the kind of information the user
+              asked for.
+
+            - Examples of the mistake to avoid:
+                * User asked for "match statistics" → you see a list of goal
+                  events. Goal events are a different concept from statistics.
+                  Return PARTIAL.
+                * User asked for "product specifications" → you see a list of
+                  related products / recommendations. Different concept.
+                  Return PARTIAL.
+                * User asked for "user reviews" → you see news article comments,
+                  or seller responses. Different concept. Return PARTIAL.
+                * User asked for "stock price history" → you see an article about
+                  the company. Different concept. Return PARTIAL.
+
+            - Prefer PARTIAL with clear reasoning over PRESENT with shaky fields.
+              PARTIAL gives the orchestrator a chance to drill deeper (click a
+              tab, follow a link); PRESENT-with-wrong-fields derails the flow.
+
+            - When PRESENT, the fields you emit must answer the user's request
+              directly. A field that's merely "interesting" or "related" but
+              doesn't answer the request is not appropriate — leave it out.
+
+            VALUE EXTRACTION (same as before):
+              - Only return text you can clearly read in the screenshot.
+              - Do not invent or guess. Read the actual pixels.
+              - Copy text exactly as displayed (capitalisation, accents,
+                punctuation, whitespace).
+              - For purely numeric values, emit only digits and decimal/thousands
+                separators. Drop currency symbols, units, decorative typography.
+              - Do not infer numeric values from charts, star bars, progress
+                meters. Text only.
+              - For MULTI, pick ONE specific visible row; do not aggregate.
+
+            Return:
+
+              1. verdict: PRESENT | PARTIAL | ABSENT.
+              2. reasoning: one short sentence grounded in what is visible.
+                 If PARTIAL, name what IS visible vs what is missing.
+              3. target: object (null when verdict is PARTIAL or ABSENT).
+                 Shape:
+                   { type: "SINGLE"|"MULTI", fields: [{name, text}] }
+        """.trimIndent()
+
+        val raw = llm.jsonWithImage(instructions, screenshot, RawAnalysis::class.java)
+            ?: error("empty response from chat model")
+
+        val target = raw.target?.toTarget()
+        val analysis = PageAnalysis(
+            verdict = raw.verdict,
+            reasoning = raw.reasoning.trim(),
+            target = target,
+        )
+        log.debug(
+            "verifier returned verdict={} targetType={} fieldCount={}",
+            analysis.verdict,
+            target?.type,
+            target?.fields?.size ?: 0,
+        )
+        return analysis
+    }
+
     private fun RawTarget.toTarget(): Target? {
         val t = type ?: return null
         val cleaned = fields.orEmpty()

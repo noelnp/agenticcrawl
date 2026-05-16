@@ -127,7 +127,7 @@ class Orchestrator(
         }
 
         val capture = session.capture()
-        val analysis = pageAnalyzer.analyze(job.description, capture.screenshot)
+        val analysis = pageAnalyzer.verifyRequest(job.description, capture.screenshot)
         log.info(
             "follow-up analysis verdict={} fieldCount={}",
             analysis.verdict, analysis.target?.fields?.size ?: 0,
@@ -179,32 +179,49 @@ class Orchestrator(
             )
         }
 
+        val candidates = session.collectClickableCandidates()
+        if (candidates.isBlank()) {
+            return failStep(
+                jobId,
+                action = PlanAction.CLICK_TO_REVEAL,
+                reasoning = reasoning,
+                detail = "no visible clickable elements found on the current page",
+                jobFailMessage = "click without any visible candidates",
+            )
+        }
+
         val target = clickTargetFinder.find(
             intent = reasoning,
             userDescription = job.description,
             screenshot = screenshot,
+            candidates = candidates,
         )
         if (target == null) {
             return failStep(
                 jobId,
                 action = PlanAction.CLICK_TO_REVEAL,
                 reasoning = reasoning,
-                detail = "ClickTargetFinder could not identify a label to click",
+                detail = "ClickTargetFinder could not identify an element matching the intent",
                 jobFailMessage = "no clickable element identified for intent",
             )
         }
-        log.info("orchestrator clicking label '{}'", target.label)
+        log.info(
+            "orchestrator clicking selector='{}' text={} nth={}",
+            target.selector, target.text, target.nth,
+        )
 
-        val click = session.clickByText(target.label)
+        val click = session.clickElement(target)
         if (!click.clicked) {
             return failStep(
                 jobId,
                 action = PlanAction.CLICK_TO_REVEAL,
                 reasoning = reasoning,
-                detail = "clickByText('${target.label}') did not click an element",
-                jobFailMessage = "click failed for label '${target.label}'",
+                detail = "clickElement(selector='${target.selector}', text=${target.text}, nth=${target.nth}) did not click an element",
+                jobFailMessage = "click failed for selector '${target.selector}'",
                 actionData = mapOf(
-                    "label" to target.label,
+                    "selector" to target.selector,
+                    "text" to target.text,
+                    "nth" to target.nth,
                     "previousUrl" to click.previousUrl,
                     "currentUrl" to click.currentUrl,
                     "urlChanged" to false,
@@ -213,13 +230,13 @@ class Orchestrator(
         }
         if (!click.urlChanged) {
             log.info(
-                "click '{}' succeeded with no URL change — capturing anyway, the reveal may be inline (accordion / DOM swap)",
-                target.label,
+                "click selector='{}' succeeded with no URL change — capturing anyway, the reveal may be inline",
+                target.selector,
             )
         }
 
         val capture = session.capture()
-        val analysis = pageAnalyzer.analyze(job.description, capture.screenshot)
+        val analysis = pageAnalyzer.verifyRequest(job.description, capture.screenshot)
         log.info(
             "post-click analysis verdict={} fieldCount={}",
             analysis.verdict, analysis.target?.fields?.size ?: 0,
@@ -239,10 +256,12 @@ class Orchestrator(
             action = PlanAction.CLICK_TO_REVEAL,
             reasoning = reasoning,
             outcome = PlanOutcome.SUCCESS,
-            detail = "clicked '${target.label}' → layer $newIndex at $landedAt (verdict=${analysis.verdict}, urlChanged=${click.urlChanged})",
+            detail = "clicked selector='${target.selector}' → layer $newIndex at $landedAt (verdict=${analysis.verdict}, urlChanged=${click.urlChanged})",
             actionDataJson = jsonOrNull(
                 mapOf(
-                    "label" to target.label,
+                    "selector" to target.selector,
+                    "text" to target.text,
+                    "nth" to target.nth,
                     "previousUrl" to click.previousUrl,
                     "currentUrl" to landedAt,
                     "urlChanged" to click.urlChanged,

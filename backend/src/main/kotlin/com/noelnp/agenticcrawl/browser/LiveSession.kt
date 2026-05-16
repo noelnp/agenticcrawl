@@ -5,6 +5,7 @@ import com.microsoft.playwright.BrowserContext
 import com.microsoft.playwright.Locator
 import com.microsoft.playwright.Page
 import com.microsoft.playwright.Playwright
+import com.noelnp.agenticcrawl.analysis.ClickTarget
 import com.noelnp.agenticcrawl.analysis.DetailLinkSelector
 import com.noelnp.agenticcrawl.browser.consent.ConsentDismisser
 import org.slf4j.LoggerFactory
@@ -27,14 +28,30 @@ class LiveSession internal constructor(
 
     fun currentUrl(): String = onSessionThread { page.url() }
 
-    fun clickByText(label: String, settleMs: Double = properties.postLoadSettleMs): ClickResult = onSessionThread {
+    fun collectClickableCandidates(): String = onSessionThread {
+        runCatching { page.evaluate(CLICKABLE_CANDIDATES_JS) as? String }
+            .onFailure { log.warn("collectClickableCandidates failed: {}", it.message) }
+            .getOrNull()
+            .orEmpty()
+    }
+
+    fun clickElement(target: ClickTarget, settleMs: Double = properties.postLoadSettleMs): ClickResult = onSessionThread {
         val before = page.url()
-        val locator = page.getByText(label, com.microsoft.playwright.Page.GetByTextOptions().setExact(true)).first()
+        val baseLocator = page.locator(target.selector)
+        val filtered = if (target.text != null) {
+            baseLocator.filter(Locator.FilterOptions().setHasText(target.text))
+        } else {
+            baseLocator
+        }
+        val final = if (target.nth != null) filtered.nth(target.nth) else filtered.first()
         val clicked = try {
-            locator.click(Locator.ClickOptions().setTimeout(5_000.0))
+            final.click(Locator.ClickOptions().setTimeout(5_000.0))
             true
         } catch (e: Exception) {
-            log.warn("clickByText('{}') failed: {}", label, e.message)
+            log.warn(
+                "clickElement(selector='{}' text={} nth={}) failed: {}",
+                target.selector, target.text, target.nth, e.message,
+            )
             false
         }
         if (clicked) page.waitForTimeout(settleMs)
@@ -187,6 +204,39 @@ class LiveSession internal constructor(
         const val ROW_CONTAINER_SELECTOR = "div, article, li, tr, section"
         const val MIN_TOLERANT_PREFIX_LENGTH = 8
         val WHITESPACE_REGEX = Regex("\\s+")
+
+        const val CLICKABLE_CANDIDATES_JS = """
+            () => {
+                const sel = 'button, a[href], [role="button"], [role="tab"], ' +
+                            '[role="link"], [role="menuitem"], [role="menuitemcheckbox"], ' +
+                            'input[type="button"], input[type="submit"], summary';
+                const visible = Array.from(document.querySelectorAll(sel)).filter(el => {
+                    const r = el.getBoundingClientRect();
+                    if (r.width < 5 || r.height < 5) return false;
+                    const style = window.getComputedStyle(el);
+                    if (style.visibility === 'hidden' || style.display === 'none') return false;
+                    if (parseFloat(style.opacity) < 0.1) return false;
+                    return true;
+                });
+                return visible.slice(0, 150).map((el, idx) => {
+                    const tag = el.tagName.toLowerCase();
+                    const role = el.getAttribute('role') || '';
+                    const testid = el.getAttribute('data-testid') || '';
+                    const aria = el.getAttribute('aria-label') || '';
+                    const title = el.getAttribute('title') || '';
+                    const cls = Array.from(el.classList).slice(0, 4).join(' ');
+                    const text = (el.innerText || '').trim().replace(/\s+/g, ' ').substring(0, 60);
+                    const parts = ['tag=' + tag];
+                    if (role) parts.push('role=' + role);
+                    if (testid) parts.push('data-testid="' + testid + '"');
+                    if (cls) parts.push('class="' + cls + '"');
+                    if (aria) parts.push('aria-label="' + aria + '"');
+                    if (title) parts.push('title="' + title + '"');
+                    if (text) parts.push('text="' + text + '"');
+                    return '#' + idx + '  ' + parts.join('  ');
+                }).join('\n');
+            }
+        """
 
         const val DISTINCT_LEAVES_JS = """
             (el, values) => {
