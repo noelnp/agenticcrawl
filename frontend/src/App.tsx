@@ -349,6 +349,11 @@ function PlanTrajectory({ steps }: { steps: PlanStep[] }) {
             {step.detailMessage && (
               <p className="muted">{step.detailMessage}</p>
             )}
+            {step.actionData && Object.keys(step.actionData).length > 0 && (
+              <pre className="plan-action-data">
+                {JSON.stringify(step.actionData, null, 2)}
+              </pre>
+            )}
           </li>
         ))}
       </ol>

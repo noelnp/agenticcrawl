@@ -51,8 +51,14 @@ class Planner(
                 is not visible on any layer so far. The most common case: user
                 asked for per-item detail (stats, full description, specs) and the
                 listing only shows summary info.
-              - If the listing has no detailLink AND deeper data is needed, you
-                cannot reach it — pick FINISH and note the gap in reasoning.
+              - CLICK_TO_REVEAL when (a) we are already on a detail-style page
+                (a non-LISTING layer exists), AND (b) the user's missing info
+                looks like it lives behind a tab or button on that page (e.g.
+                stats, lineups, reviews, specifications). Picking this hands off
+                to a separate finder that identifies the exact label to click —
+                you do NOT pick the label yourself.
+              - If neither action would reach the missing info, pick FINISH and
+                note the gap in reasoning.
 
             Return JSON only:
               { "action": $schemaUnion,
@@ -122,6 +128,8 @@ class Planner(
     private fun describeAction(action: PlanAction): String = when (action) {
         PlanAction.NAVIGATE_VIA_DETAIL_LINK ->
             "- NAVIGATE_VIA_DETAIL_LINK: follow the listing's detailLink and recon one example detail page."
+        PlanAction.CLICK_TO_REVEAL ->
+            "- CLICK_TO_REVEAL: click a visible UI control (tab, button, link) on the current page to reveal content that isn't shown yet. Pick this when the missing info looks like it lives behind a tab on the current page (e.g. a 'Stats' or 'Lineups' tab)."
         PlanAction.FINISH ->
             "- FINISH: stop reconnaissance; existing layers cover the user's request."
     }

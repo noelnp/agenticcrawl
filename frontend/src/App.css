@@ -355,3 +355,17 @@ button.secondary {
 .plan-skipped {
   border-left: 3px solid #6b7280;
 }
+
+.plan-action-data {
+  margin: 0.4rem 0 0;
+  padding: 0.4rem 0.6rem;
+  background: #0f1115;
+  border: 1px solid #2a2f39;
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 0.72rem;
+  color: #b8bcc4;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

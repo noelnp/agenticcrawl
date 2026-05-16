@@ -41,7 +41,7 @@ data class JobResponse(
             goalSatisfied = job.goalSatisfied,
             errorMessage = job.errorMessage,
             layers = job.layers.map { ReconLayerDto.from(it, objectMapper) },
-            planSteps = job.planSteps.map { PlanStepDto.from(it) },
+            planSteps = job.planSteps.map { PlanStepDto.from(it, objectMapper) },
             createdAt = job.createdAt,
             updatedAt = job.updatedAt,
         )
@@ -85,15 +85,18 @@ data class PlanStepDto(
     val reasoning: String,
     val outcome: PlanOutcome,
     val detailMessage: String?,
+    val actionData: JsonNode?,
     val createdAt: Instant,
 ) {
     companion object {
-        fun from(step: PlanStep) = PlanStepDto(
+        fun from(step: PlanStep, objectMapper: ObjectMapper) = PlanStepDto(
             stepIndex = step.stepIndex,
             action = step.action,
             reasoning = step.reasoning,
             outcome = step.outcome,
             detailMessage = step.detailMessage,
+            actionData = step.actionDataJson?.takeIf { it.isNotBlank() }
+                ?.let { objectMapper.readTree(it) },
             createdAt = step.createdAt,
         )
     }

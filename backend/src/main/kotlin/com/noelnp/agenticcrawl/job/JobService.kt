@@ -308,6 +308,7 @@ class JobService(
         reasoning: String,
         outcome: PlanOutcome,
         detail: String? = null,
+        actionDataJson: String? = null,
     ) {
         jobMutator.mutate(id) { j ->
             val step = PlanStep(
@@ -318,6 +319,7 @@ class JobService(
             )
             step.outcome = outcome
             step.detailMessage = detail
+            step.actionDataJson = actionDataJson
             j.planSteps.add(step)
         }
     }

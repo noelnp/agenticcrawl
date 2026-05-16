@@ -27,6 +27,26 @@ class LiveSession internal constructor(
 
     fun currentUrl(): String = onSessionThread { page.url() }
 
+    fun clickByText(label: String, settleMs: Double = properties.postLoadSettleMs): ClickResult = onSessionThread {
+        val before = page.url()
+        val locator = page.getByText(label, com.microsoft.playwright.Page.GetByTextOptions().setExact(true)).first()
+        val clicked = try {
+            locator.click(Locator.ClickOptions().setTimeout(5_000.0))
+            true
+        } catch (e: Exception) {
+            log.warn("clickByText('{}') failed: {}", label, e.message)
+            false
+        }
+        if (clicked) page.waitForTimeout(settleMs)
+        val after = page.url()
+        ClickResult(
+            previousUrl = before,
+            currentUrl = after,
+            urlChanged = before != after,
+            clicked = clicked,
+        )
+    }
+
     fun resolveDetailLinkHref(detailLink: DetailLinkSelector): String? = onSessionThread {
         val locator = page.locator(detailLink.selector)
         val target = when (val nth = detailLink.nth) {

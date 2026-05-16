@@ -44,6 +44,9 @@ class PlanStep(
     @Column(name = "detail_message", columnDefinition = "TEXT")
     var detailMessage: String? = null
 
+    @Column(name = "action_data_json", columnDefinition = "TEXT")
+    var actionDataJson: String? = null
+
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
     var createdAt: Instant = Instant.now()

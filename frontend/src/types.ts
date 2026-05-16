@@ -46,7 +46,7 @@ export interface ExtractedStructure {
   detailLink?: DetailLinkSelector | null;
 }
 
-export type ReconLayerKind = "LISTING" | "FOLLOWED_DETAIL_LINK";
+export type ReconLayerKind = "LISTING" | "FOLLOWED_DETAIL_LINK" | "REVEALED_BY_CLICK";
 
 export interface ReconLayer {
   layerIndex: number;
@@ -60,7 +60,7 @@ export interface ReconLayer {
   createdAt: string;
 }
 
-export type PlanAction = "NAVIGATE_VIA_DETAIL_LINK" | "FINISH";
+export type PlanAction = "NAVIGATE_VIA_DETAIL_LINK" | "CLICK_TO_REVEAL" | "FINISH";
 export type PlanOutcome = "SUCCESS" | "FAILED" | "SKIPPED";
 
 export interface PlanStep {
@@ -69,6 +69,7 @@ export interface PlanStep {
   reasoning: string;
   outcome: PlanOutcome;
   detailMessage: string | null;
+  actionData: Record<string, unknown> | null;
   createdAt: string;
 }
 
