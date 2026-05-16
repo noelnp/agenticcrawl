@@ -1,7 +1,8 @@
 export type JobStatus =
   | "PENDING"
-  | "RUNNING"
+  | "RUNNING_LISTING_RECON"
   | "AWAITING_CONFIRMATION"
+  | "RUNNING_PLAN"
   | "SUCCEEDED"
   | "FAILED"
   | "EXPIRED";
@@ -45,17 +46,41 @@ export interface ExtractedStructure {
   detailLink?: DetailLinkSelector | null;
 }
 
+export type ReconLayerKind = "LISTING" | "FOLLOWED_DETAIL_LINK";
+
+export interface ReconLayer {
+  layerIndex: number;
+  atUrl: string;
+  layerKind: ReconLayerKind;
+  validation: Validation | null;
+  target: Target | null;
+  containerHtml: string | null;
+  extractedStructure: ExtractedStructure | null;
+  hasScreenshot: boolean;
+  createdAt: string;
+}
+
+export type PlanAction = "NAVIGATE_VIA_DETAIL_LINK" | "FINISH";
+export type PlanOutcome = "SUCCESS" | "FAILED" | "SKIPPED";
+
+export interface PlanStep {
+  stepIndex: number;
+  action: PlanAction;
+  reasoning: string;
+  outcome: PlanOutcome;
+  detailMessage: string | null;
+  createdAt: string;
+}
+
 export interface Job {
   id: string;
   description: string;
   url: string;
   status: JobStatus;
-  validation: Validation | null;
-  target: Target | null;
-  containerHtml: string | null;
-  extractedStructure: ExtractedStructure | null;
+  goalSatisfied: boolean | null;
   errorMessage: string | null;
-  hasScreenshot: boolean;
+  layers: ReconLayer[];
+  planSteps: PlanStep[];
   createdAt: string;
   updatedAt: string;
 }

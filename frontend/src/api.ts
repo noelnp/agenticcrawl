@@ -30,6 +30,6 @@ export async function confirmJob(id: string): Promise<Job> {
   return res.json();
 }
 
-export function screenshotUrl(id: string): string {
-  return `${BASE}/jobs/${id}/screenshot`;
+export function layerScreenshotUrl(id: string, layerIndex: number): string {
+  return `${BASE}/jobs/${id}/layers/${layerIndex}/screenshot`;
 }

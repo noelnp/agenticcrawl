@@ -122,7 +122,9 @@ button.secondary {
 }
 
 .status-pending,
-.status-running {
+.status-running,
+.status-running_listing_recon,
+.status-running_plan {
   background: #2a3a55;
   color: #a8c0ff;
 }
@@ -291,4 +293,65 @@ button.secondary {
   width: 100%;
   border-radius: 6px;
   display: block;
+}
+
+.layer-card {
+  background: #11141a;
+  border: 1px solid #1f242d;
+  border-radius: 12px;
+  padding: 1rem 1.25rem;
+  margin-top: 1rem;
+}
+
+.layer-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.5rem;
+}
+
+.layer-header h2 {
+  font-size: 0.95rem;
+  margin: 0;
+  letter-spacing: 0.04em;
+}
+
+.layer-url {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 0.75rem;
+  word-break: break-all;
+  text-align: right;
+}
+
+.plan-steps {
+  list-style: decimal inside;
+  padding: 0;
+  margin: 0.5rem 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.plan-step {
+  background: #1a1d24;
+  border: 1px solid #262b34;
+  border-radius: 8px;
+  padding: 0.6rem 0.85rem;
+}
+
+.plan-step p {
+  margin: 0.25rem 0 0;
+}
+
+.plan-success {
+  border-left: 3px solid #4ea76d;
+}
+
+.plan-failed {
+  border-left: 3px solid #d04848;
+}
+
+.plan-skipped {
+  border-left: 3px solid #6b7280;
 }

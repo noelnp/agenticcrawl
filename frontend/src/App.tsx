@@ -1,6 +1,12 @@
 import { useEffect, useState } from "react";
-import { confirmJob, createJob, fetchJob, screenshotUrl } from "./api";
-import type { ExtractedStructure, Job, Target } from "./types";
+import { confirmJob, createJob, fetchJob, layerScreenshotUrl } from "./api";
+import type {
+  ExtractedStructure,
+  Job,
+  PlanStep,
+  ReconLayer,
+  Target,
+} from "./types";
 import "./App.css";
 
 const TERMINAL_STATUSES = new Set(["SUCCEEDED", "FAILED", "EXPIRED"]);
@@ -110,11 +116,7 @@ export function App() {
       {error && <div className="error">{error}</div>}
 
       {job && (
-        <JobView
-          job={job}
-          confirming={confirming}
-          onConfirm={handleConfirm}
-        />
+        <JobView job={job} confirming={confirming} onConfirm={handleConfirm} />
       )}
     </div>
   );
@@ -129,14 +131,13 @@ function JobView({
   confirming: boolean;
   onConfirm: () => void;
 }) {
-  const isAbsent = job.validation?.verdict === "ABSENT";
   const awaitingConfirmation = job.status === "AWAITING_CONFIRMATION";
 
   return (
     <section className="job-view">
       <div className="job-header">
         <span className={`status status-${job.status.toLowerCase()}`}>
-          {job.status === "AWAITING_CONFIRMATION" ? "AWAITING CONFIRMATION" : job.status}
+          {job.status.replace(/_/g, " ")}
         </span>
         <span className="job-id">{job.id}</span>
       </div>
@@ -151,10 +152,54 @@ function JobView({
         </div>
       )}
 
-      {job.validation && (
-        <div className={`verdict verdict-${job.validation.verdict.toLowerCase()}`}>
-          <h3>Verdict: {job.validation.verdict}</h3>
-          <p>{job.validation.reasoning}</p>
+      {job.layers.map((layer) => (
+        <LayerCard
+          key={layer.layerIndex}
+          job={job}
+          layer={layer}
+          awaitingConfirmation={
+            awaitingConfirmation && layer.layerIndex === 0
+          }
+          confirming={confirming}
+          onConfirm={onConfirm}
+        />
+      ))}
+
+      {job.planSteps.length > 0 && <PlanTrajectory steps={job.planSteps} />}
+    </section>
+  );
+}
+
+function LayerCard({
+  job,
+  layer,
+  awaitingConfirmation,
+  confirming,
+  onConfirm,
+}: {
+  job: Job;
+  layer: ReconLayer;
+  awaitingConfirmation: boolean;
+  confirming: boolean;
+  onConfirm: () => void;
+}) {
+  const isAbsent = layer.validation?.verdict === "ABSENT";
+
+  return (
+    <div className="layer-card">
+      <div className="layer-header">
+        <h2>
+          Layer {layer.layerIndex} — {layer.layerKind.replace(/_/g, " ")}
+        </h2>
+        <span className="muted layer-url">{layer.atUrl}</span>
+      </div>
+
+      {layer.validation && (
+        <div
+          className={`verdict verdict-${layer.validation.verdict.toLowerCase()}`}
+        >
+          <h3>Verdict: {layer.validation.verdict}</h3>
+          <p>{layer.validation.reasoning}</p>
           {isAbsent && (
             <p className="muted">
               No target was extracted because the page does not contain what
@@ -164,26 +209,29 @@ function JobView({
         </div>
       )}
 
-      {job.target && (
+      {layer.target && (
         <TargetBlock
-          target={job.target}
+          target={layer.target}
           awaitingConfirmation={awaitingConfirmation}
           confirming={confirming}
           onConfirm={onConfirm}
         />
       )}
 
-      {job.extractedStructure && (
-        <StructureBlock structure={job.extractedStructure} />
+      {layer.extractedStructure && (
+        <StructureBlock structure={layer.extractedStructure} />
       )}
 
-      {job.hasScreenshot && (
+      {layer.hasScreenshot && (
         <div className="screenshot">
           <h3>Screenshot</h3>
-          <img src={screenshotUrl(job.id)} alt="Captured page" />
+          <img
+            src={layerScreenshotUrl(job.id, layer.layerIndex)}
+            alt={`Capture of layer ${layer.layerIndex}`}
+          />
         </div>
       )}
-    </section>
+    </div>
   );
 }
 
@@ -233,7 +281,6 @@ function TargetBlock({
           </button>
         </div>
       )}
-
     </div>
   );
 }
@@ -283,6 +330,28 @@ function StructureBlock({ structure }: { structure: ExtractedStructure }) {
           )}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+function PlanTrajectory({ steps }: { steps: PlanStep[] }) {
+  return (
+    <div className="example">
+      <h3>Plan trajectory</h3>
+      <ol className="plan-steps">
+        {steps.map((step) => (
+          <li key={step.stepIndex} className={`plan-step plan-${step.outcome.toLowerCase()}`}>
+            <div>
+              <strong>{step.action.replace(/_/g, " ")}</strong>
+              <span className="muted"> — {step.outcome}</span>
+            </div>
+            <p>{step.reasoning}</p>
+            {step.detailMessage && (
+              <p className="muted">{step.detailMessage}</p>
+            )}
+          </li>
+        ))}
+      </ol>
     </div>
   );
 }
