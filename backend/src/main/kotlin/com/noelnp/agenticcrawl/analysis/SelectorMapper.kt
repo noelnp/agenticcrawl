@@ -35,9 +35,8 @@ class SelectorMapper(chatClientBuilder: ChatClient.Builder) {
             lastAttempt = structure
             val verification = verify(rowRoot, fields, structure)
             if (verification.allValid) {
-                val refined = preferTestidForNth(rowRoot, structure)
-                log.info("selectors verified on attempt {} rowSelector='{}'", attempt + 1, refined.rowSelector)
-                return refined
+                log.info("selectors verified on attempt {} rowSelector='{}'", attempt + 1, structure.rowSelector)
+                return structure
             }
             log.warn("selectors failed verification (attempt {}): {}", attempt + 1, verification.summary())
             feedback = verification.feedbackPrompt()
@@ -169,17 +168,17 @@ class SelectorMapper(chatClientBuilder: ChatClient.Builder) {
     ): FieldVerdict {
         if (expected == null) return FieldVerdict(false, "field name not in target")
         val matches = runCatching { rowRoot.select(fs.selector) }.getOrNull()
-            ?: return FieldVerdict(false, "selector '${fs.selector}' is invalid CSS.${suggestFor(rowRoot, fs, expected)}")
+            ?: return FieldVerdict(false, "selector '${fs.selector}' is invalid CSS")
         val descendants = matches.asSequence().filter { it !== rowRoot }.toList()
         if (descendants.isEmpty()) {
-            return FieldVerdict(false, "selector '${fs.selector}' matched 0 elements within the row.${suggestFor(rowRoot, fs, expected)}")
+            return FieldVerdict(false, "selector '${fs.selector}' matched 0 elements within the row")
         }
         val element = when (val nth = fs.nth) {
             null -> {
                 if (descendants.size > 1) {
                     return FieldVerdict(
                         false,
-                        "selector '${fs.selector}' matched ${descendants.size} elements; either narrow it to match 1, or set nth to disambiguate (matches found in order: ${describeMatches(descendants)}).${suggestFor(rowRoot, fs, expected)}",
+                        "selector '${fs.selector}' matched ${descendants.size} elements; either narrow it to match 1, or set nth to disambiguate (matches found in order: ${describeMatches(descendants)})",
                     )
                 }
                 descendants[0]
@@ -188,7 +187,7 @@ class SelectorMapper(chatClientBuilder: ChatClient.Builder) {
                 if (nth < 0 || nth >= descendants.size) {
                     return FieldVerdict(
                         false,
-                        "nth=$nth is out of range; selector '${fs.selector}' matched ${descendants.size} elements (valid nth: 0..${descendants.size - 1}).${suggestFor(rowRoot, fs, expected)}",
+                        "nth=$nth is out of range; selector '${fs.selector}' matched ${descendants.size} elements (valid nth: 0..${descendants.size - 1})",
                     )
                 }
                 descendants[nth]
@@ -204,123 +203,10 @@ class SelectorMapper(chatClientBuilder: ChatClient.Builder) {
         } else {
             FieldVerdict(
                 false,
-                "selector '${fs.selector}'${fs.nth?.let { " nth=$it" }.orEmpty()} returned ${quoted(actual.take(120))}; expected ${quoted(expected)}.${suggestFor(rowRoot, fs, expected)}",
+                "selector '${fs.selector}'${fs.nth?.let { " nth=$it" }.orEmpty()} returned ${quoted(actual.take(120))}; expected ${quoted(expected)}",
             )
         }
     }
-
-    private fun suggestFor(rowRoot: Element, fs: FieldSelector, expected: String): String {
-        val leaf = findLeafForValue(rowRoot, expected, fs.source) ?: return ""
-        val unique = uniqueOwnSelectors(leaf, rowRoot)
-        if (unique.isNotEmpty()) {
-            return " The leaf for this value is <${leaf.tagName()}>; selectors that uniquely identify it within the row: ${unique.joinToString(", ") { "`$it`" }}."
-        }
-        val shared = sharedOwnSelectors(leaf, rowRoot)
-        if (shared.isNotEmpty()) {
-            val sorted = shared.sortedBy { it.second }
-            val hints = sorted.take(3).joinToString(", ") { "`${it.first}` (matches ${it.second})" }
-            return " The leaf for this value (<${leaf.tagName()}>) has no unique own identifier — use one of these with nth: $hints."
-        }
-        return " The leaf for this value is <${leaf.tagName()}> with no useful own identifier; consider the tag with nth."
-    }
-
-    private fun preferTestidForNth(rowRoot: Element, structure: ExtractedStructure): ExtractedStructure {
-        val refinedFields = structure.fields.map { fs ->
-            if (fs.nth == null) return@map fs
-            val current = locateCurrentElement(rowRoot, fs) ?: return@map fs
-            val testid = current.attr("data-testid").takeIf { it.isNotBlank() } ?: return@map fs
-            val testidSelector = "[data-testid='${escapeAttr(testid)}']"
-            if (testidSelector == fs.selector) return@map fs
-            val testidMatches = runCatching { rowRoot.select(testidSelector) }.getOrNull()
-                ?.asSequence()
-                ?.filter { it !== rowRoot }
-                ?.toList()
-                .orEmpty()
-            val idx = testidMatches.indexOfFirst { it === current }
-            if (idx < 0) return@map fs
-            val newNth = if (testidMatches.size == 1) null else idx
-            log.info("preferTestidForNth: swapped field '{}' from '{}' nth={} to '{}' nth={}",
-                fs.name, fs.selector, fs.nth, testidSelector, newNth)
-            fs.copy(selector = testidSelector, nth = newNth)
-        }
-        return structure.copy(fields = refinedFields)
-    }
-
-    private fun locateCurrentElement(rowRoot: Element, fs: FieldSelector): Element? {
-        val matches = runCatching { rowRoot.select(fs.selector) }.getOrNull() ?: return null
-        val descendants = matches.asSequence().filter { it !== rowRoot }.toList()
-        val idx = fs.nth ?: 0
-        return descendants.getOrNull(idx)
-    }
-
-    private fun findLeafForValue(rowRoot: Element, value: String, source: ValueSource): Element? {
-        val target = normalize(value)
-        if (target.isEmpty()) return null
-        return when (source) {
-            is ValueSource.Text -> rowRoot.allElements.asSequence()
-                .filter {
-                    val own = normalize(it.ownText())
-                    own == target || own.contains(target, ignoreCase = false)
-                }
-                .maxByOrNull { depthFromRoot(it, rowRoot) }
-            is ValueSource.Attribute -> rowRoot.allElements.asSequence()
-                .firstOrNull {
-                    val attr = normalize(it.attr(source.name))
-                    attr == target || attr.contains(target, ignoreCase = false)
-                }
-        }
-    }
-
-    private fun uniqueOwnSelectors(leaf: Element, rowRoot: Element): List<String> {
-        val out = mutableListOf<String>()
-        leaf.attr("data-testid").takeIf { it.isNotBlank() }?.let { testid ->
-            val sel = "[data-testid='${escapeAttr(testid)}']"
-            if (uniquelyMatches(rowRoot, sel, leaf)) out += sel
-        }
-        leaf.classNames().forEach { cls ->
-            val sel = ".$cls"
-            if (uniquelyMatches(rowRoot, sel, leaf)) out += sel
-        }
-        val tag = leaf.tagName()
-        if (uniquelyMatches(rowRoot, tag, leaf)) out += tag
-        return out
-    }
-
-    private fun sharedOwnSelectors(leaf: Element, rowRoot: Element): List<Pair<String, Int>> {
-        val out = mutableListOf<Pair<String, Int>>()
-        leaf.attr("data-testid").takeIf { it.isNotBlank() }?.let { testid ->
-            val sel = "[data-testid='${escapeAttr(testid)}']"
-            countDescendantMatches(rowRoot, sel)?.let { if (it >= 2) out += sel to it }
-        }
-        leaf.classNames().forEach { cls ->
-            val sel = ".$cls"
-            countDescendantMatches(rowRoot, sel)?.let { if (it >= 2) out += sel to it }
-        }
-        return out
-    }
-
-    private fun uniquelyMatches(rowRoot: Element, selector: String, expected: Element): Boolean {
-        val matches = runCatching { rowRoot.select(selector) }.getOrNull() ?: return false
-        val descendants = matches.asSequence().filter { it !== rowRoot }.toList()
-        return descendants.size == 1 && descendants[0] === expected
-    }
-
-    private fun countDescendantMatches(rowRoot: Element, selector: String): Int? {
-        val matches = runCatching { rowRoot.select(selector) }.getOrNull() ?: return null
-        return matches.asSequence().filter { it !== rowRoot }.count()
-    }
-
-    private fun depthFromRoot(el: Element, root: Element): Int {
-        var d = 0
-        var cur: Element? = el
-        while (cur != null && cur !== root) {
-            d++
-            cur = cur.parent()
-        }
-        return d
-    }
-
-    private fun escapeAttr(s: String): String = s.replace("'", "\\'")
 
     private fun describeMatches(elements: List<Element>): String =
         elements.mapIndexed { i, el -> "[$i] <${el.tagName()}> ${quoted(el.text().take(40))}" }
