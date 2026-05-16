@@ -25,12 +25,10 @@ data class JobResponse(
     val description: String,
     val url: String,
     val status: JobStatus,
-    val validation: ValidationDto?,
-    val target: JsonNode?,
-    val containerHtml: String?,
-    val extractedStructure: JsonNode?,
+    val goalSatisfied: Boolean?,
     val errorMessage: String?,
-    val hasScreenshot: Boolean,
+    val layers: List<ReconLayerDto>,
+    val planSteps: List<PlanStepDto>,
     val createdAt: Instant,
     val updatedAt: Instant,
 ) {
@@ -40,18 +38,63 @@ data class JobResponse(
             description = job.description,
             url = job.url,
             status = job.status,
-            validation = job.validationVerdict?.let { verdict ->
-                ValidationDto(verdict, job.validationReasoning ?: "")
-            },
-            target = job.targetJson?.takeIf { it.isNotBlank() }?.let { objectMapper.readTree(it) },
-            containerHtml = job.containerHtml,
-            extractedStructure = job.extractedStructureJson
-                ?.takeIf { it.isNotBlank() }
-                ?.let { objectMapper.readTree(it) },
+            goalSatisfied = job.goalSatisfied,
             errorMessage = job.errorMessage,
-            hasScreenshot = job.screenshot != null,
+            layers = job.layers.map { ReconLayerDto.from(it, objectMapper) },
+            planSteps = job.planSteps.map { PlanStepDto.from(it) },
             createdAt = job.createdAt,
             updatedAt = job.updatedAt,
+        )
+    }
+}
+
+data class ReconLayerDto(
+    val layerIndex: Int,
+    val atUrl: String,
+    val layerKind: ReconLayerKind,
+    val validation: ValidationDto?,
+    val target: JsonNode?,
+    val containerHtml: String?,
+    val extractedStructure: JsonNode?,
+    val hasScreenshot: Boolean,
+    val createdAt: Instant,
+) {
+    companion object {
+        fun from(layer: ReconLayer, objectMapper: ObjectMapper) = ReconLayerDto(
+            layerIndex = layer.layerIndex,
+            atUrl = layer.atUrl,
+            layerKind = layer.layerKind,
+            validation = layer.validationVerdict?.let { v ->
+                ValidationDto(v, layer.validationReasoning ?: "")
+            },
+            target = layer.targetJson?.takeIf { it.isNotBlank() }
+                ?.let { objectMapper.readTree(it) },
+            containerHtml = layer.containerHtml,
+            extractedStructure = layer.extractedStructureJson
+                ?.takeIf { it.isNotBlank() }
+                ?.let { objectMapper.readTree(it) },
+            hasScreenshot = layer.screenshot != null,
+            createdAt = layer.createdAt,
+        )
+    }
+}
+
+data class PlanStepDto(
+    val stepIndex: Int,
+    val action: PlanAction,
+    val reasoning: String,
+    val outcome: PlanOutcome,
+    val detailMessage: String?,
+    val createdAt: Instant,
+) {
+    companion object {
+        fun from(step: PlanStep) = PlanStepDto(
+            stepIndex = step.stepIndex,
+            action = step.action,
+            reasoning = step.reasoning,
+            outcome = step.outcome,
+            detailMessage = step.detailMessage,
+            createdAt = step.createdAt,
         )
     }
 }

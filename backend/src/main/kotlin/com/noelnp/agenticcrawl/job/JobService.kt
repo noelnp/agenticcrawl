@@ -14,6 +14,7 @@ import com.noelnp.agenticcrawl.browser.PageCapture
 import org.slf4j.LoggerFactory
 import org.slf4j.MDC
 import org.springframework.stereotype.Service
+import org.springframework.transaction.annotation.Transactional
 import java.util.UUID
 import java.util.concurrent.ExecutorService
 
@@ -34,23 +35,30 @@ class JobService(
         val saved = jobRepository.save(Job(description = description, url = url))
         val id = saved.id ?: error("job id was null after save")
         log.info("created job url={} descriptionPreview='{}'", url, description.take(80))
-        jobExecutor.submit { withMdc(id) { runAnalysis(id) } }
+        jobExecutor.submit { withMdc(id) { runListingRecon(id) } }
         return saved
     }
 
+    @Transactional(readOnly = true)
     fun get(id: UUID): Job =
         jobRepository.findById(id).orElseThrow { JobNotFoundException(id) }
+            .also {
+                // Force-initialise lazy collections while still in the transaction
+                // so callers outside this method can read them.
+                it.layers.size
+                it.planSteps.size
+            }
 
     fun confirm(id: UUID): Job {
-        val job = get(id)
-        if (job.status != JobStatus.AWAITING_CONFIRMATION) {
-            throw InvalidJobStateException(id, job.status, JobStatus.AWAITING_CONFIRMATION)
+        val current = get(id)
+        if (current.status != JobStatus.AWAITING_CONFIRMATION) {
+            throw InvalidJobStateException(id, current.status, JobStatus.AWAITING_CONFIRMATION)
         }
         val session = sessionManager.take(id)
             ?: throw SessionUnavailableException(id)
-        val updated = update(id) { it.status = JobStatus.RUNNING }
-        log.info("status -> RUNNING (confirmed)")
-        jobExecutor.submit { withMdc(id) { runLocator(id, session) } }
+        val updated = update(id) { it.status = JobStatus.RUNNING_PLAN }
+        log.info("status -> RUNNING_PLAN (confirmed)")
+        jobExecutor.submit { withMdc(id) { runListingMapping(id, session) } }
         return updated
     }
 
@@ -63,30 +71,49 @@ class JobService(
         }
     }
 
-    private fun runAnalysis(id: UUID) {
+    private fun runListingRecon(id: UUID) {
         var session: LiveSession? = null
         try {
-            val job = update(id) { it.status = JobStatus.RUNNING }
-            log.info("status -> RUNNING url={}", job.url)
+            val job = update(id) { it.status = JobStatus.RUNNING_LISTING_RECON }
+            log.info("status -> RUNNING_LISTING_RECON url={}", job.url)
 
             log.debug("opening browser session")
             session = browserService.openSession(job.url)
 
             log.debug("starting capture")
             val capture = session.capture()
-            update(id) { it.screenshot = capture.screenshot }
-            log.info("capture complete bytes={} visibleTextChars={}", capture.screenshot.size, capture.visibleText.length)
+            log.info(
+                "capture complete bytes={} visibleTextChars={}",
+                capture.screenshot.size, capture.visibleText.length,
+            )
 
             log.debug("starting analysis")
             val analysis = pageAnalyzer.analyze(job.description, capture.screenshot)
-            update(id) {
-                it.validationVerdict = analysis.verdict
-                it.validationReasoning = analysis.reasoning
+            log.info(
+                "analysis verdict={} reasoning='{}'",
+                analysis.verdict, analysis.reasoning,
+            )
+
+            // Persist Layer 0 (LISTING) with the screenshot + analysis result.
+            update(id) { j ->
+                val layer = ReconLayer(
+                    job = j,
+                    layerIndex = 0,
+                    layerKind = ReconLayerKind.LISTING,
+                    atUrl = j.url,
+                )
+                layer.screenshot = capture.screenshot
+                layer.validationVerdict = analysis.verdict
+                layer.validationReasoning = analysis.reasoning
+                layer.targetJson = analysis.target?.let { objectMapper.writeValueAsString(it) }
+                j.layers.add(layer)
             }
-            log.info("analysis verdict={} reasoning='{}'", analysis.verdict, analysis.reasoning)
 
             if (analysis.verdict == ValidationVerdict.ABSENT) {
-                update(id) { it.status = JobStatus.SUCCEEDED }
+                update(id) {
+                    it.status = JobStatus.SUCCEEDED
+                    it.goalSatisfied = false
+                }
                 log.info("status -> SUCCEEDED (verdict ABSENT — skipping target)")
                 session.close()
                 session = null
@@ -104,11 +131,8 @@ class JobService(
             val groundedness = checkGroundedness(target, capture)
             log.info(
                 "groundedness {}/{} matched required={} matched={} unmatched={}",
-                groundedness.matched,
-                groundedness.total,
-                groundedness.required,
-                groundedness.matchedNames,
-                groundedness.unmatchedNames,
+                groundedness.matched, groundedness.total, groundedness.required,
+                groundedness.matchedNames, groundedness.unmatchedNames,
             )
             if (!groundedness.passes) {
                 markFailed(
@@ -118,29 +142,24 @@ class JobService(
                 return
             }
 
-            update(id) {
-                it.targetJson = objectMapper.writeValueAsString(target)
-                it.status = JobStatus.AWAITING_CONFIRMATION
-            }
+            update(id) { it.status = JobStatus.AWAITING_CONFIRMATION }
             sessionManager.register(id, session, CONFIRMATION_TTL_SECONDS) {
                 onSessionExpired(id)
             }
             session = null
             log.info("status -> AWAITING_CONFIRMATION (ttl={}s)", CONFIRMATION_TTL_SECONDS)
         } catch (e: Exception) {
-            log.error("analysis failed: {}", e.message, e)
+            log.error("listing recon failed: {}", e.message, e)
             markFailed(id, e.message ?: e.javaClass.simpleName)
         } finally {
             session?.let { runCatching { it.close() } }
         }
     }
 
-    private fun runLocator(id: UUID, session: LiveSession) {
+    private fun runListingMapping(id: UUID, session: LiveSession) {
         try {
-            val targetJson = jobRepository.findById(id).orElseThrow { JobNotFoundException(id) }
-                .targetJson
-            val target = parseTarget(targetJson)
-                ?: throw IllegalStateException("locator invoked but no target stored on job")
+            val target = loadListingTarget(id)
+                ?: throw IllegalStateException("listing mapping invoked but no target stored on layer 0")
 
             val groundedValues = target.fields.map { it.text }.filter { it.isNotBlank() }
             log.debug("running locator over {} grounded values (type={})", groundedValues.size, target.type)
@@ -150,7 +169,7 @@ class JobService(
                 TargetType.SINGLE -> groundedValues.firstOrNull()?.let { session.findSingleElementHtml(it) }
             }
             if (containerHtml.isNullOrBlank()) {
-                log.warn("locator returned no element — saving job without containerHtml")
+                log.warn("locator returned no element — saving listing layer without containerHtml")
             } else {
                 log.info("locator captured html chars={}", containerHtml.length)
             }
@@ -178,14 +197,21 @@ class JobService(
                 log.warn("structure inference returned no result")
             }
 
+            update(id) { j ->
+                val layer = j.layers.firstOrNull { it.layerIndex == 0 }
+                    ?: error("listing layer missing on job $id")
+                layer.containerHtml = containerHtml
+                layer.extractedStructureJson = structureJson
+            }
+
+            // Until the planner / orchestrator lands, terminate here.
             update(id) {
-                it.containerHtml = containerHtml
-                it.extractedStructureJson = structureJson
                 it.status = JobStatus.SUCCEEDED
+                it.goalSatisfied = true
             }
             log.info("status -> SUCCEEDED")
         } catch (e: Exception) {
-            log.error("locator failed: {}", e.message, e)
+            log.error("listing mapping failed: {}", e.message, e)
             markFailed(id, e.message ?: e.javaClass.simpleName)
         } finally {
             runCatching { session.close() }
@@ -209,6 +235,21 @@ class JobService(
                 log.error("failed to mark job EXPIRED", e)
             }
         }
+    }
+
+    @Transactional(readOnly = true)
+    fun loadListingTarget(id: UUID): Target? {
+        val job = jobRepository.findById(id).orElseThrow { JobNotFoundException(id) }
+        val layer = job.layers.firstOrNull { it.layerIndex == 0 } ?: return null
+        return parseTarget(layer.targetJson)
+    }
+
+    @Transactional(readOnly = true)
+    fun loadLayerScreenshot(id: UUID, layerIndex: Int): ByteArray? {
+        val job = jobRepository.findById(id).orElseThrow { JobNotFoundException(id) }
+        val layer = job.layers.firstOrNull { it.layerIndex == layerIndex }
+            ?: throw LayerNotFoundException(id, layerIndex)
+        return layer.screenshot
     }
 
     private fun parseTarget(json: String?): Target? {
@@ -261,7 +302,8 @@ class JobService(
         }.onFailure { log.error("could not mark job failed", it) }
     }
 
-    private fun update(id: UUID, mutator: (Job) -> Unit): Job {
+    @Transactional
+    fun update(id: UUID, mutator: (Job) -> Unit): Job {
         val job = jobRepository.findById(id).orElseThrow { JobNotFoundException(id) }
         mutator(job)
         return jobRepository.save(job)
@@ -273,15 +315,14 @@ class JobService(
     private companion object {
         const val GROUNDEDNESS_MIN_MATCHES = 2
         const val CONFIRMATION_TTL_SECONDS = 180L
-        // \p{Zs} = Unicode space-separator category (NBSP, NARROW NBSP, THIN SPACE, etc.)
-        // Combined with \s to also catch tab/newline.
         val WHITESPACE_REGEX = Regex("[\\p{Zs}\\s]+")
     }
 }
 
 class JobNotFoundException(id: UUID) : RuntimeException("Job not found: $id")
 
-class ScreenshotNotAvailableException(id: UUID) : RuntimeException("Screenshot not yet available for job $id")
+class LayerNotFoundException(jobId: UUID, layerIndex: Int) :
+    RuntimeException("Layer $layerIndex not found on job $jobId")
 
 class InvalidJobStateException(id: UUID, actual: JobStatus, expected: JobStatus) :
     RuntimeException("Job $id is in state $actual but expected $expected")

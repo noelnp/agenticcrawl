@@ -40,16 +40,26 @@ class JobController(
     fun confirm(@PathVariable id: UUID): JobResponse =
         JobResponse.from(jobService.confirm(id), objectMapper)
 
-    @GetMapping("/{id}/screenshot", produces = [MediaType.IMAGE_PNG_VALUE])
-    fun screenshot(@PathVariable id: UUID): ResponseEntity<ByteArray> {
-        val job = jobService.get(id)
-        val bytes = job.screenshot ?: throw ScreenshotNotAvailableException(id)
+    @GetMapping(
+        "/{id}/layers/{layerIndex}/screenshot",
+        produces = [MediaType.IMAGE_PNG_VALUE],
+    )
+    fun layerScreenshot(
+        @PathVariable id: UUID,
+        @PathVariable layerIndex: Int,
+    ): ResponseEntity<ByteArray> {
+        val bytes = jobService.loadLayerScreenshot(id, layerIndex)
+            ?: throw ScreenshotNotAvailableException(id, layerIndex)
         return ResponseEntity.ok()
             .contentType(MediaType.IMAGE_PNG)
             .body(bytes)
     }
 
-    @ExceptionHandler(JobNotFoundException::class, ScreenshotNotAvailableException::class)
+    @ExceptionHandler(
+        JobNotFoundException::class,
+        LayerNotFoundException::class,
+        ScreenshotNotAvailableException::class,
+    )
     @ResponseStatus(HttpStatus.NOT_FOUND)
     fun handleNotFound(e: RuntimeException): Map<String, String?> =
         mapOf("error" to e.message)
@@ -59,3 +69,6 @@ class JobController(
     fun handleConflict(e: RuntimeException): Map<String, String?> =
         mapOf("error" to e.message)
 }
+
+class ScreenshotNotAvailableException(jobId: UUID, layerIndex: Int) :
+    RuntimeException("Screenshot not yet available for job $jobId layer $layerIndex")
