@@ -14,6 +14,7 @@ import com.noelnp.agenticcrawl.browser.service.BrowserService
 import com.noelnp.agenticcrawl.browser.session.BrowserSessionManager
 import com.noelnp.agenticcrawl.browser.session.LiveSession
 import com.noelnp.agenticcrawl.browser.model.PageCapture
+import com.noelnp.agenticcrawl.codegen.service.PlanAssembler
 import com.noelnp.agenticcrawl.job.domain.Job
 import com.noelnp.agenticcrawl.job.domain.JobStatus
 import com.noelnp.agenticcrawl.job.domain.PlanAction
@@ -38,6 +39,7 @@ class JobService(
     private val pageAnalyzer: PageAnalyzer,
     private val selectorMapper: SelectorMapper,
     private val detailLinkFinder: DetailLinkFinder,
+    private val planAssembler: PlanAssembler,
     @Lazy private val orchestrator: Orchestrator,
     private val jobExecutor: ExecutorService,
     private val objectMapper: ObjectMapper,
@@ -190,9 +192,9 @@ class JobService(
 
     /**
      * Run the selector-mapping pipeline against the live page for a verified
-     * [target]. Shared by the listing layer (where [includeDetailLink] is true
-     * so we also probe for per-row detail links) and by follow-up layers
-     * captured during the planner loop (where it's false — the orchestrator
+     * [target]. Shared by the listing layer (with [includeDetailLink] true
+     * to also probe for per-row detail links) and by follow-up layers
+     * captured during the planner loop (with it false — the orchestrator
      * does not navigate further from inside a stat/spec row).
      */
     fun mapTargetToStructure(
@@ -329,9 +331,21 @@ class JobService(
     }
 
     fun markGoalSatisfied(id: UUID) {
-        jobMutator.mutate(id) {
-            it.status = JobStatus.SUCCEEDED
-            it.goalSatisfied = true
+        jobMutator.mutate(id) { job ->
+            job.status = JobStatus.SUCCEEDED
+            job.goalSatisfied = true
+            val plan = runCatching { planAssembler.assemble(job) }
+                .onFailure { log.warn("plan assembly threw: {}", it.message, it) }
+                .getOrNull()
+            if (plan != null) {
+                job.extractionPlanJson = objectMapper.writeValueAsString(plan)
+                log.info(
+                    "extraction plan assembled: {} top-level steps, rootKey='{}'",
+                    plan.steps.size, plan.output.rootKey,
+                )
+            } else {
+                log.warn("extraction plan could not be assembled from job state")
+            }
         }
         log.info("status -> SUCCEEDED (goal satisfied)")
     }
@@ -389,12 +403,13 @@ class JobService(
     }
 
     /**
-     * Filter [fields] to only those whose [TargetField.text] literally appears in
-     * [visibleText] (whitespace-normalised, case-insensitive). Used as a safety
-     * net against vision-LLM hallucinations on follow-up layers — e.g. emitting
-     * an aggregated string like "A — B" that the page renders as two separate
-     * elements. Such values cannot be located in the DOM and would derail
-     * selector mapping, so we drop them before mapping runs.
+     * Filter [fields] to only those whose [TargetField.text] literally appears
+     * in [visibleText] (whitespace-normalised, case-insensitive). Safety net
+     * against vision-LLM hallucinations on follow-up layers — e.g. an
+     * aggregated string like "A — B" that the page renders as two separate
+     * elements. Such values cannot be located in the DOM, and feeding them
+     * into selector mapping produces garbage selectors. Filtered before
+     * mapping runs.
      */
     fun groundFields(fields: List<TargetField>, visibleText: String): List<TargetField> {
         val haystack = normalizeWhitespace(visibleText)

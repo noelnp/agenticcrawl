@@ -383,9 +383,9 @@ class Orchestrator(
     private companion object {
         const val MAX_PLAN_STEPS = 4
 
-        // A row needs at least this many literally-grounded fields for selector
-        // mapping to have any chance of locking onto a meaningful container.
-        // Below this we'd be feeding noise into findRowContainerHtml.
+        // Minimum literally-grounded fields required before selector mapping
+        // runs. Below this, findRowContainerHtml has too little signal to
+        // lock onto the right container.
         const val MIN_GROUNDED_FIELDS = 2
     }
 }

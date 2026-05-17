@@ -73,6 +73,41 @@ export interface PlanStep {
   createdAt: string;
 }
 
+export type ScriptStatus = "RUNNING" | "SUCCEEDED" | "FAILED";
+
+export type ExtractionStep =
+  | { "@type": "Navigate"; url: string; description: string }
+  | { "@type": "DismissConsent"; description: string }
+  | { "@type": "WaitForSelector"; selector: string; timeoutMs: number; description: string }
+  | { "@type": "ResolveAndNavigate"; detailLinkSelector: string; nth?: number | null; description: string }
+  | { "@type": "Click"; selector: string; text?: string | null; nth?: number | null; description: string }
+  | {
+      "@type": "ExtractRows";
+      rowSelector: string;
+      fields: FieldSelector[];
+      attachAs: string;
+      description: string;
+      limit?: number | null;
+    }
+  | {
+      "@type": "ForEachRow";
+      rowSelector: string;
+      fields: FieldSelector[];
+      attachAs: string;
+      perRowSteps: ExtractionStep[];
+      description: string;
+      limit?: number | null;
+    };
+
+export interface ExtractionPlan {
+  version: number;
+  targetUrl: string;
+  userRequest: string;
+  description: string;
+  output: { format: string; rootKey: string };
+  steps: ExtractionStep[];
+}
+
 export interface Job {
   id: string;
   description: string;
@@ -82,6 +117,11 @@ export interface Job {
   errorMessage: string | null;
   layers: ReconLayer[];
   planSteps: PlanStep[];
+  extractionPlan: ExtractionPlan | null;
+  hasGeneratedScript: boolean;
+  scriptStatus: ScriptStatus | null;
+  scriptError: string | null;
+  scriptResult: unknown | null;
   createdAt: string;
   updatedAt: string;
 }

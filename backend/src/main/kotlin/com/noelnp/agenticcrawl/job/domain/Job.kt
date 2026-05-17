@@ -38,6 +38,21 @@ class Job(
     @Column(name = "error_message", columnDefinition = "TEXT")
     var errorMessage: String? = null
 
+    @Column(name = "extraction_plan_json", columnDefinition = "TEXT")
+    var extractionPlanJson: String? = null
+
+    @Column(name = "generated_script", columnDefinition = "TEXT")
+    var generatedScript: String? = null
+
+    @Column(name = "script_result_json", columnDefinition = "TEXT")
+    var scriptResultJson: String? = null
+
+    @Column(name = "script_status", length = 32)
+    var scriptStatus: String? = null
+
+    @Column(name = "script_error", columnDefinition = "TEXT")
+    var scriptError: String? = null
+
     @OneToMany(
         mappedBy = "job",
         cascade = [CascadeType.ALL],

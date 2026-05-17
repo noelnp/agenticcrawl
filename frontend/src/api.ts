@@ -33,3 +33,16 @@ export async function confirmJob(id: string): Promise<Job> {
 export function layerScreenshotUrl(id: string, layerIndex: number): string {
   return `${BASE}/jobs/${id}/layers/${layerIndex}/screenshot`;
 }
+
+export function scriptDownloadUrl(id: string): string {
+  return `${BASE}/jobs/${id}/script`;
+}
+
+export async function runScript(id: string): Promise<Job> {
+  const res = await fetch(`${BASE}/jobs/${id}/run-script`, { method: "POST" });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Failed to start script run (${res.status}): ${text}`);
+  }
+  return res.json();
+}

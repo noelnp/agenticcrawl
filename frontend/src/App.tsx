@@ -1,7 +1,17 @@
 import { useEffect, useState } from "react";
-import { confirmJob, createJob, fetchJob, layerScreenshotUrl } from "./api";
+import {
+  confirmJob,
+  createJob,
+  fetchJob,
+  layerScreenshotUrl,
+  runScript,
+  scriptDownloadUrl,
+} from "./api";
 import type {
   ExtractedStructure,
+  ExtractionPlan,
+  ExtractionStep,
+  FieldSelector,
   Job,
   PlanStep,
   ReconLayer,
@@ -20,9 +30,11 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
 
   const isTerminal = job ? TERMINAL_STATUSES.has(job.status) : false;
+  const scriptRunning = job?.scriptStatus === "RUNNING";
+  const shouldPoll = job ? !isTerminal || scriptRunning : false;
 
   useEffect(() => {
-    if (!job?.id || isTerminal) return;
+    if (!job?.id || !shouldPoll) return;
     const interval = setInterval(async () => {
       try {
         const fresh = await fetchJob(job.id);
@@ -32,7 +44,7 @@ export function App() {
       }
     }, 1000);
     return () => clearInterval(interval);
-  }, [job?.id, isTerminal]);
+  }, [job?.id, shouldPoll]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -46,6 +58,17 @@ export function App() {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function handleRunScript() {
+    if (!job) return;
+    setError(null);
+    try {
+      const updated = await runScript(job.id);
+      setJob(updated);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     }
   }
 
@@ -116,7 +139,12 @@ export function App() {
       {error && <div className="error">{error}</div>}
 
       {job && (
-        <JobView job={job} confirming={confirming} onConfirm={handleConfirm} />
+        <JobView
+          job={job}
+          confirming={confirming}
+          onConfirm={handleConfirm}
+          onRunScript={handleRunScript}
+        />
       )}
     </div>
   );
@@ -126,10 +154,12 @@ function JobView({
   job,
   confirming,
   onConfirm,
+  onRunScript,
 }: {
   job: Job;
   confirming: boolean;
   onConfirm: () => void;
+  onRunScript: () => void;
 }) {
   const awaitingConfirmation = job.status === "AWAITING_CONFIRMATION";
 
@@ -166,7 +196,209 @@ function JobView({
       ))}
 
       {job.planSteps.length > 0 && <PlanTrajectory steps={job.planSteps} />}
+
+      {job.extractionPlan && (
+        <ExtractionPlanBlock
+          jobId={job.id}
+          plan={job.extractionPlan}
+          scriptStatus={job.scriptStatus}
+          scriptError={job.scriptError}
+          scriptResult={job.scriptResult}
+          onRun={onRunScript}
+        />
+      )}
     </section>
+  );
+}
+
+function ExtractionPlanBlock({
+  jobId,
+  plan,
+  scriptStatus,
+  scriptError,
+  scriptResult,
+  onRun,
+}: {
+  jobId: string;
+  plan: ExtractionPlan;
+  scriptStatus: Job["scriptStatus"];
+  scriptError: string | null;
+  scriptResult: unknown;
+  onRun: () => void;
+}) {
+  const isRunning = scriptStatus === "RUNNING";
+  const runLabel = isRunning
+    ? "Running…"
+    : scriptStatus === "SUCCEEDED" || scriptStatus === "FAILED"
+    ? "Run again"
+    : "Run scraper";
+
+  return (
+    <div className="example extraction-plan">
+      <h2>Extraction plan</h2>
+      <p className="muted">{plan.description}</p>
+      <p className="muted">
+        Target: <code>{plan.targetUrl}</code> · output rootKey:{" "}
+        <code>{plan.output.rootKey}</code> · format: {plan.output.format}
+      </p>
+
+      <div className="actions">
+        <button type="button" onClick={onRun} disabled={isRunning}>
+          {runLabel}
+        </button>
+        <a
+          href={scriptDownloadUrl(jobId)}
+          className="secondary download-link"
+          download={`scraper-${jobId}.main.kts`}
+        >
+          Download script
+        </a>
+      </div>
+
+      {isRunning && (
+        <p className="muted">
+          Scraping in progress — this can take a few minutes depending on how
+          many rows are on the listing.
+        </p>
+      )}
+      {scriptStatus === "FAILED" && scriptError && (
+        <div className="error">Run failed: {scriptError}</div>
+      )}
+
+      <ExtractionStepList steps={plan.steps} depth={0} />
+
+      {scriptStatus === "SUCCEEDED" && scriptResult != null && (
+        <div className="script-result">
+          <h3>Result</h3>
+          <pre>{JSON.stringify(scriptResult, null, 2)}</pre>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ExtractionStepList({
+  steps,
+  depth,
+}: {
+  steps: ExtractionStep[];
+  depth: number;
+}) {
+  return (
+    <ol className={`plan-steps depth-${depth}`}>
+      {steps.map((step, i) => (
+        <li key={i} className={`plan-step step-${step["@type"]}`}>
+          <StepRow step={step} />
+          {step["@type"] === "ForEachRow" && (
+            <ExtractionStepList steps={step.perRowSteps} depth={depth + 1} />
+          )}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function StepRow({ step }: { step: ExtractionStep }) {
+  switch (step["@type"]) {
+    case "Navigate":
+      return (
+        <StepHeader title="Navigate" description={step.description}>
+          <code>{step.url}</code>
+        </StepHeader>
+      );
+    case "DismissConsent":
+      return <StepHeader title="Dismiss consent" description={step.description} />;
+    case "WaitForSelector":
+      return (
+        <StepHeader title="Wait for selector" description={step.description}>
+          <code>{step.selector}</code>{" "}
+          <span className="muted">({step.timeoutMs}ms timeout)</span>
+        </StepHeader>
+      );
+    case "ResolveAndNavigate":
+      return (
+        <StepHeader title="Follow detail link" description={step.description}>
+          <code>{step.detailLinkSelector}</code>
+          {step.nth != null && <span className="muted"> · nth {step.nth}</span>}
+        </StepHeader>
+      );
+    case "Click":
+      return (
+        <StepHeader title="Click" description={step.description}>
+          <code>{step.selector}</code>
+          {step.text && <span className="muted"> · text "{step.text}"</span>}
+          {step.nth != null && <span className="muted"> · nth {step.nth}</span>}
+        </StepHeader>
+      );
+    case "ExtractRows":
+      return (
+        <StepHeader
+          title={`Extract rows → "${step.attachAs}"${limitSuffix(step.limit)}`}
+          description={step.description}
+        >
+          <code>{step.rowSelector}</code>
+          <FieldTable fields={step.fields} />
+        </StepHeader>
+      );
+    case "ForEachRow":
+      return (
+        <StepHeader
+          title={`For each row → "${step.attachAs}"${limitSuffix(step.limit)}`}
+          description={step.description}
+        >
+          <code>{step.rowSelector}</code>
+          <FieldTable fields={step.fields} />
+        </StepHeader>
+      );
+  }
+}
+
+function limitSuffix(limit: number | null | undefined): string {
+  return limit != null ? ` (first ${limit})` : "";
+}
+
+function StepHeader({
+  title,
+  description,
+  children,
+}: {
+  title: string;
+  description: string;
+  children?: React.ReactNode;
+}) {
+  return (
+    <div>
+      <div>
+        <strong>{title}</strong>
+      </div>
+      <p className="muted">{description}</p>
+      {children}
+    </div>
+  );
+}
+
+function FieldTable({ fields }: { fields: FieldSelector[] }) {
+  return (
+    <table className="example-fields field-table">
+      <tbody>
+        {fields.map((f) => (
+          <tr key={f.name}>
+            <th>{f.name}</th>
+            <td>
+              <code>{f.selector}</code>{" "}
+              <span className="muted">
+                ({[
+                  f.nth != null ? `nth: ${f.nth}` : null,
+                  f.source.from === "TEXT" ? "text" : `attr:${f.source.name}`,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")})
+              </span>
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }
 

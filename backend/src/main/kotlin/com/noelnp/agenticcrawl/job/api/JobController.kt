@@ -1,6 +1,9 @@
 package com.noelnp.agenticcrawl.job.api
 
 import com.fasterxml.jackson.databind.ObjectMapper
+import com.noelnp.agenticcrawl.codegen.service.InvalidScriptStateException
+import com.noelnp.agenticcrawl.codegen.service.NoPlanException
+import com.noelnp.agenticcrawl.codegen.service.ScriptRunner
 import com.noelnp.agenticcrawl.job.api.dto.CreateJobRequest
 import com.noelnp.agenticcrawl.job.api.dto.JobResponse
 import com.noelnp.agenticcrawl.job.service.InvalidJobStateException
@@ -27,6 +30,7 @@ import java.util.UUID
 @RequestMapping("/api/jobs")
 class JobController(
     private val jobService: JobService,
+    private val scriptRunner: ScriptRunner,
     private val objectMapper: ObjectMapper,
 ) {
 
@@ -62,16 +66,42 @@ class JobController(
             .body(bytes)
     }
 
+    @PostMapping("/{id}/run-script")
+    fun runScript(@PathVariable id: UUID): JobResponse {
+        scriptRunner.startRun(id)
+        return JobResponse.from(jobService.get(id), objectMapper)
+    }
+
+    @GetMapping(
+        "/{id}/script",
+        produces = [MediaType.TEXT_PLAIN_VALUE],
+    )
+    fun downloadScript(@PathVariable id: UUID): ResponseEntity<String> {
+        val source = scriptRunner.ensureRendered(id)
+        return ResponseEntity.ok()
+            .header(
+                "Content-Disposition",
+                "attachment; filename=\"scraper-$id.main.kts\"",
+            )
+            .contentType(MediaType.TEXT_PLAIN)
+            .body(source)
+    }
+
     @ExceptionHandler(
         JobNotFoundException::class,
         LayerNotFoundException::class,
         ScreenshotNotAvailableException::class,
+        NoPlanException::class,
     )
     @ResponseStatus(HttpStatus.NOT_FOUND)
     fun handleNotFound(e: RuntimeException): Map<String, String?> =
         mapOf("error" to e.message)
 
-    @ExceptionHandler(InvalidJobStateException::class, SessionUnavailableException::class)
+    @ExceptionHandler(
+        InvalidJobStateException::class,
+        SessionUnavailableException::class,
+        InvalidScriptStateException::class,
+    )
     @ResponseStatus(HttpStatus.CONFLICT)
     fun handleConflict(e: RuntimeException): Map<String, String?> =
         mapOf("error" to e.message)

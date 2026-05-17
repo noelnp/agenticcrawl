@@ -36,6 +36,11 @@ data class JobResponse(
     val errorMessage: String?,
     val layers: List<ReconLayerDto>,
     val planSteps: List<PlanStepDto>,
+    val extractionPlan: JsonNode?,
+    val hasGeneratedScript: Boolean,
+    val scriptStatus: String?,
+    val scriptError: String?,
+    val scriptResult: JsonNode?,
     val createdAt: Instant,
     val updatedAt: Instant,
 ) {
@@ -49,6 +54,15 @@ data class JobResponse(
             errorMessage = job.errorMessage,
             layers = job.layers.map { ReconLayerDto.from(it, objectMapper) },
             planSteps = job.planSteps.map { PlanStepDto.from(it, objectMapper) },
+            extractionPlan = job.extractionPlanJson
+                ?.takeIf { it.isNotBlank() }
+                ?.let { objectMapper.readTree(it) },
+            hasGeneratedScript = !job.generatedScript.isNullOrBlank(),
+            scriptStatus = job.scriptStatus,
+            scriptError = job.scriptError,
+            scriptResult = job.scriptResultJson
+                ?.takeIf { it.isNotBlank() }
+                ?.let { objectMapper.readTree(it) },
             createdAt = job.createdAt,
             updatedAt = job.updatedAt,
         )

@@ -369,3 +369,65 @@ button.secondary {
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+.extraction-plan {
+  border-left: 3px solid #4c7ac0;
+}
+
+.extraction-plan .actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  margin: 0.6rem 0 0.4rem;
+}
+
+.extraction-plan .download-link {
+  display: inline-block;
+  padding: 0.4rem 0.85rem;
+  background: #20242c;
+  color: #d6dae3;
+  text-decoration: none;
+  border-radius: 6px;
+  border: 1px solid #2a2f39;
+  font-size: 0.85rem;
+}
+
+.extraction-plan .download-link:hover {
+  background: #262b34;
+}
+
+.plan-steps.depth-1 {
+  margin-top: 0.5rem;
+  border-left: 2px dashed #2a2f39;
+  padding-left: 0.85rem;
+}
+
+.plan-step.step-ForEachRow {
+  border-left: 3px solid #c0884c;
+}
+
+.field-table {
+  margin-top: 0.5rem;
+  font-size: 0.78rem;
+}
+
+.script-result {
+  margin-top: 1rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid #2a2f39;
+}
+
+.script-result pre {
+  padding: 0.6rem 0.8rem;
+  background: #0f1115;
+  border: 1px solid #2a2f39;
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 0.75rem;
+  color: #cdd2db;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 480px;
+  overflow-y: auto;
+}

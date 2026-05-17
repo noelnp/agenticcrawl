@@ -49,10 +49,10 @@ class PageAnalyzer(private val llm: LlmClient) {
               type=MULTI
                 A repeating row structure (a table, a list of cards, search
                 results). Pick ONE visible row instance. Emit 2–8 fields read
-                from that single row — `name` is a short camelCase key
-                (teamHome, teamAway, scoreHome, scoreAway), `text` is the
-                visible text copied exactly. Names must be consistent with
-                what other rows would also provide.
+                from that single row — `name` is a short camelCase key derived
+                from intent + what the row shows, `text` is the visible text
+                copied exactly. Names must be consistent with what other rows
+                would also provide.
 
                 Row-field test: a value qualifies as a row field only if it
                 would CHANGE for the row immediately above or below the one
@@ -95,18 +95,12 @@ class PageAnalyzer(private val llm: LlmClient) {
                has shape:
                  { type: "SINGLE"|"MULTI", fields: [{name, text}] }
 
-            Examples (illustrative — do not copy):
-              SINGLE:
-                { type: "SINGLE",
-                  fields: [{ name: "price", text: "1 803,58 kr" }] }
-              MULTI:
-                { type: "MULTI",
-                  fields: [
-                    { name: "teamHome",  text: "Liverpool" },
-                    { name: "teamAway",  text: "Chelsea" },
-                    { name: "scoreHome", text: "2" },
-                    { name: "scoreAway", text: "1" }
-                  ] }
+            Shape examples (structural only — do not copy field names or
+            values; derive yours from the actual screenshot):
+              SINGLE shape:
+                { type: "SINGLE", fields: [{ name, text }] }
+              MULTI shape:
+                { type: "MULTI", fields: [{ name, text }, { name, text }, ...] }
         """.trimIndent()
 
         val raw = llm.jsonWithImage(instructions, screenshot, RawAnalysis::class.java)
@@ -128,8 +122,8 @@ class PageAnalyzer(private val llm: LlmClient) {
     }
 
     /**
-     * Verification-mode analysis for follow-up layers (after we've navigated or
-     * clicked during recon). Unlike [analyze], this does not try to discover
+     * Verification-mode analysis for follow-up layers (post-navigation or
+     * post-click during recon). Unlike [analyze], this does not try to discover
      * any prominent repeating pattern on the page — it asks "is the user's
      * specific request visible here?" and prefers PARTIAL over making up a
      * target when something is structurally similar but semantically different.
@@ -147,19 +141,49 @@ class PageAnalyzer(private val llm: LlmClient) {
             $description
             ---
 
+            SCOPE OF THIS VERIFICATION — read first.
+
+            You are looking at ONE per-item page (or one click-revealed view) reached
+            from a listing. Your job is to verify whether the PER-ITEM CONTENT the
+            user wants is reachable from this kind of page. You are NOT verifying
+            that the entire result set is on screen.
+
+            The user's request may include aggregate or distributive phrasing that
+            describes the OUTER iteration the runtime scraper will perform, NOT a
+            constraint on what must be visible on this single page:
+              - Counts:        "top 5", "first 10", "just three", "only 8"
+              - Distributive:  "matches and their stats", "products and their reviews"
+              - Quantifiers:   "all", "every", "each"
+
+            Treat these as outer-iteration scope. Evaluate this single page on the
+            per-item content alone. Examples of the mistake to AVOID:
+
+              - Request "top 5 recipes and their ingredients", page shows ONE
+                recipe's ingredient list → PRESENT. Do NOT downgrade to PARTIAL
+                because only one recipe is on screen — the runtime will iterate
+                the listing for the count.
+
+              - Request "all books and their reviews", page shows ONE book's
+                reviews → PRESENT. Do NOT downgrade because the page shows one
+                book, not all.
+
+              - Request "every author's bibliography", page shows ONE author's
+                book list → PRESENT.
+
             Decide a verdict for what THIS screenshot offers:
 
-              PRESENT — the requested information is clearly visible. Identify ONLY
-                        the fields/values that directly satisfy the request. If the
-                        info is a repeating list of items the user asked for, emit
+              PRESENT — the per-item content the user wants is clearly visible.
+                        Identify ONLY the fields/values that directly satisfy the
+                        per-item part of the request. If the per-item content is a
+                        repeating list (e.g. stat rows, spec rows, reviews), emit
                         type=MULTI with ONE row's fields. If a single value,
                         type=SINGLE.
 
               PARTIAL — the page is related to the user's request (same site, same
-                        topic, same item) but the specific information they asked
-                        for is NOT yet visible on this screenshot. It may live
-                        behind a tab, a button, an accordion, or further down the
-                        page — but it is not on screen now.
+                        topic, same item kind) but the specific per-item content
+                        they asked for is NOT yet visible on this screenshot. It
+                        may live behind a tab, a button, an accordion, or further
+                        down the page — but it is not on screen now.
 
               ABSENT  — the page does not relate to the user's request.
 
