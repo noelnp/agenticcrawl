@@ -59,7 +59,7 @@ class SelectorMapper(private val llm: LlmClient) {
         val fieldList = fields.joinToString("\n") { "- ${it.name} = ${quoted(it.text)}" }
         val rowIntent = when (type) {
             TargetType.MULTI -> "This row is one of many similar rows on the page. The rowSelector must be a class or data-* attribute on the row root that would also match the other similar rows (so a scraper can iterate). Avoid per-instance identifiers like auto-generated IDs."
-            TargetType.SINGLE -> "This is a single value on the page (not part of a repeating list). The rowSelector still matches the captured element root, but no iteration is implied."
+            TargetType.SINGLE -> "This is a SINGLE-item view — exactly one record on the page. The rowSelector must (a) match the captured element root and (b) uniquely identify that root on the FULL page (count(rowSelector) === 1). Avoid bare tags and generic utility classes that would match many elements page-wide; prefer a class/id/data-* attribute that names this section's role."
         }
         val feedbackBlock = feedback?.let { "\n\nPrevious attempt had problems:\n$it\n\nFix these and try again." } ?: ""
 

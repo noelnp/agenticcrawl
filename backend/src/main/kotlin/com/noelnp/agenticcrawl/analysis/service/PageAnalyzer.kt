@@ -138,8 +138,41 @@ class PageAnalyzer(private val llm: LlmClient) {
      * specific request visible here?" and prefers PARTIAL over making up a
      * target when something is structurally similar but semantically different.
      */
-    fun verifyRequest(description: String, screenshot: ByteArray): PageAnalysis {
-        log.debug("calling verifier descriptionLen={} bytes={}", description.length, screenshot.size)
+    fun verifyRequest(
+        description: String,
+        screenshot: ByteArray,
+        priorFieldNames: List<String> = emptyList(),
+    ): PageAnalysis {
+        log.debug(
+            "calling verifier descriptionLen={} bytes={} priorFields={}",
+            description.length, screenshot.size, priorFieldNames,
+        )
+
+        val priorBlock = if (priorFieldNames.isEmpty()) {
+            ""
+        } else {
+            """
+
+            ALREADY-CAPTURED FIELDS — read carefully.
+
+            The runtime scraper will already extract these fields on a prior
+            layer, so they are part of the output for every item without
+            needing to be re-extracted here:
+
+              ${priorFieldNames.joinToString(", ")}
+
+            Do NOT re-emit any of these names. They are not what's missing
+            from the per-item output. Emit ONLY the fields that answer the
+            part of the user's per-item request that ISN'T already covered
+            by this list.
+
+            Concrete consequence: if the user asked for "X and Y" and Y is
+            already in the list above, the per-item content needed on THIS
+            page is just X. Verdict PRESENT iff X is visible. Emit one
+            field for X. Do not pad the response with the title, product
+            name, or other obvious context — they are already known.
+            """.trimIndent()
+        }
 
         val instructions = """
             You are verifying whether information requested by a user is visible on
@@ -150,6 +183,7 @@ class PageAnalyzer(private val llm: LlmClient) {
             ---
             $description
             ---
+            $priorBlock
 
             SCOPE OF THIS VERIFICATION — read first.
 

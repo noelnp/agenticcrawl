@@ -12,6 +12,7 @@ import com.noelnp.agenticcrawl.browser.consent.ConsentDismisser
 import com.noelnp.agenticcrawl.browser.model.ClickResult
 import com.noelnp.agenticcrawl.browser.model.PageCapture
 import org.slf4j.LoggerFactory
+import java.net.URI
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.TimeUnit
 
@@ -73,7 +74,12 @@ class LiveSession internal constructor(
             null -> locator.first()
             else -> locator.nth(nth)
         }
-        runCatching { target.getAttribute("href") }.getOrNull()?.takeIf { it.isNotBlank() }
+        val raw = runCatching { target.getAttribute("href") }.getOrNull()?.takeIf { it.isNotBlank() }
+            ?: return@onSessionThread null
+        val base = page.url()
+        runCatching { URI.create(base).resolve(raw).toString() }
+            .onFailure { log.warn("could not resolve href '{}' against base '{}': {}", raw, base, it.message) }
+            .getOrNull()
     }
 
     fun navigateTo(url: String): Boolean = onSessionThread {
@@ -174,12 +180,78 @@ class LiveSession internal constructor(
         return null
     }
 
-    fun findSingleElementHtml(text: String): String? = onSessionThread {
-        if (text.isBlank()) return@onSessionThread null
-        val target = page.getByText(text).first()
-        runCatching { target.evaluate("el => el.outerHTML") as? String }
-            .onFailure { log.warn("findSingleElementHtml failed: {}", it.message) }
-            .getOrNull()
+    /**
+     * Capture an HTML scope around one or more grounded field values for a
+     * SINGLE-type target. The returned outerHTML is wide enough that all
+     * values appear as DESCENDANTS of its root (SelectorMapper's verifier
+     * requires descendants for every field), while still being narrow
+     * enough that the LLM can find anchoring classes.
+     *
+     *  - Single value: locate the leaf, then climb up to the closest
+     *    ancestor that carries classes / id / data-* attributes (capped at
+     *    5 levels, stopping at body/html). Fall back to the deepest
+     *    candidate if no identifying ancestor is found.
+     *  - Multiple values: intersect [ROW_CONTAINER_SELECTOR] candidates
+     *    with `:has(text)` for each value and take the deepest (smallest)
+     *    match — same mechanism as [findRowContainerHtml] but selecting
+     *    the innermost rather than a row-shaped peer.
+     */
+    fun findSingleScopeHtml(values: List<String>): String? = onSessionThread {
+        val targets = values.filter { it.isNotBlank() }.mapNotNull { value ->
+            val resolved = resolveTolerantText(value)
+            if (resolved == null) {
+                log.warn("value has no match on page even with tolerant fallback: '{}'", value)
+                null
+            } else {
+                if (resolved != value) log.debug("tolerant match: '{}' -> '{}'", value, resolved)
+                resolved
+            }
+        }
+        if (targets.isEmpty()) return@onSessionThread null
+
+        if (targets.size == 1) {
+            val leaf = page.getByText(targets[0]).first()
+            runCatching { leaf.evaluate(CLIMB_TO_ANCHOR_JS) as? String }
+                .onFailure { log.warn("findSingleScopeHtml climb failed: {}", it.message) }
+                .getOrNull()
+        } else {
+            var loc: Locator = page.locator(ROW_CONTAINER_SELECTOR)
+            for (value in targets) {
+                loc = loc.filter(Locator.FilterOptions().setHas(page.getByText(value)))
+            }
+            val count = loc.count()
+            log.debug("findSingleScopeHtml multi-value candidates={} values={}", count, targets)
+            if (count == 0) return@onSessionThread null
+            // Last match is the deepest in DOM order — the smallest container.
+            runCatching { loc.nth(count - 1).evaluate("el => el.outerHTML") as? String }
+                .onFailure { log.warn("findSingleScopeHtml multi-value extract failed: {}", it.message) }
+                .getOrNull()
+        }
+    }
+
+    /**
+     * Count how many elements match [selector] on the current page. Used by
+     * the SINGLE-target mapping path to verify that the rowSelector picked
+     * by the LLM is page-unique (exactly one match) before persisting.
+     */
+    fun countSelectorMatches(selector: String): Int = onSessionThread {
+        runCatching { page.locator(selector).count() }
+            .onFailure { log.warn("countSelectorMatches('{}') failed: {}", selector, it.message) }
+            .getOrDefault(0)
+    }
+
+    /**
+     * Batch-count match counts for several candidate selectors on the current
+     * page. Used to identify which of a captured root's own identifiers
+     * (class / id / data-*) are page-unique, so we can feed those back to
+     * SelectorMapper as a hint when its first pick wasn't.
+     */
+    fun selectorMatchCounts(selectors: List<String>): Map<String, Int> = onSessionThread {
+        selectors.associateWith { sel ->
+            runCatching { page.locator(sel).count() }
+                .onFailure { log.debug("selectorMatchCounts('{}') failed: {}", sel, it.message) }
+                .getOrDefault(0)
+        }
     }
 
     /**
@@ -260,6 +332,54 @@ class LiveSession internal constructor(
                     if (text) parts.push('text="' + text + '"');
                     return '#' + idx + '  ' + parts.join('  ');
                 }).join('\n');
+            }
+        """
+
+        const val CLIMB_TO_ANCHOR_JS = """
+            (el) => {
+                let cur = el;
+                const ancestors = [];
+                for (let i = 0; i < 8; i++) {
+                    const parent = cur.parentElement;
+                    if (!parent) break;
+                    const tag = parent.tagName.toLowerCase();
+                    if (tag === 'body' || tag === 'html') break;
+                    ancestors.push(parent);
+                    cur = parent;
+                }
+                const isUnique = (sel) => {
+                    try { return document.querySelectorAll(sel).length === 1; }
+                    catch (e) { return false; }
+                };
+                const hasUniqueIdentifier = (a) => {
+                    if (a.id && isUnique('#' + CSS.escape(a.id))) return true;
+                    for (const cls of (a.classList || [])) {
+                        if (isUnique('.' + CSS.escape(cls))) return true;
+                    }
+                    for (const attr of (a.attributes || [])) {
+                        if (attr.name.startsWith('data-')) {
+                            const sel = '[' + attr.name + '=' + JSON.stringify(attr.value) + ']';
+                            if (isUnique(sel)) return true;
+                        }
+                    }
+                    return false;
+                };
+                // Prefer the closest ancestor that's page-unique on its own
+                // class/id/data-* — that gives SelectorMapper a guaranteed
+                // anchor for the rowSelector instead of a Tailwind utility
+                // class that happens to be on this one node too.
+                for (const a of ancestors) {
+                    if (hasUniqueIdentifier(a)) return a.outerHTML;
+                }
+                // Fallback: closest ancestor with any identifying attr.
+                for (const a of ancestors) {
+                    const hasClasses = a.classList && a.classList.length > 0;
+                    const hasId = !!a.id;
+                    const hasData = Array.from(a.attributes || []).some(at => at.name.startsWith('data-'));
+                    if (hasClasses || hasId || hasData) return a.outerHTML;
+                }
+                const fallback = ancestors[ancestors.length - 1] || el;
+                return fallback.outerHTML;
             }
         """
 

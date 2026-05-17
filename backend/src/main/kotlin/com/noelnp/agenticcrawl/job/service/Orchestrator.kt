@@ -7,6 +7,7 @@ import com.noelnp.agenticcrawl.analysis.model.PageAnalysis
 import com.noelnp.agenticcrawl.analysis.service.PageAnalyzer
 import com.noelnp.agenticcrawl.analysis.service.Planner
 import com.noelnp.agenticcrawl.analysis.model.Target
+import com.noelnp.agenticcrawl.analysis.model.TargetType
 import com.noelnp.agenticcrawl.analysis.model.ValidationVerdict
 import com.noelnp.agenticcrawl.browser.session.LiveSession
 import com.noelnp.agenticcrawl.job.domain.Job
@@ -134,7 +135,11 @@ class Orchestrator(
         }
 
         val capture = session.capture()
-        val analysis = pageAnalyzer.verifyRequest(job.description, capture.screenshot)
+        val analysis = pageAnalyzer.verifyRequest(
+            description = job.description,
+            screenshot = capture.screenshot,
+            priorFieldNames = priorFieldNames(job),
+        )
         log.info(
             "follow-up analysis verdict={} fieldCount={}",
             analysis.verdict, analysis.target?.fields?.size ?: 0,
@@ -246,7 +251,11 @@ class Orchestrator(
         }
 
         val capture = session.capture()
-        val analysis = pageAnalyzer.verifyRequest(job.description, capture.screenshot)
+        val analysis = pageAnalyzer.verifyRequest(
+            description = job.description,
+            screenshot = capture.screenshot,
+            priorFieldNames = priorFieldNames(job),
+        )
         log.info(
             "post-click analysis verdict={} fieldCount={}",
             analysis.verdict, analysis.target?.fields?.size ?: 0,
@@ -307,10 +316,14 @@ class Orchestrator(
                 raw.fields.filterNot { grounded.contains(it) }.joinToString { "${it.name}='${it.text.take(40)}'" },
             )
         }
-        if (grounded.size < MIN_GROUNDED_FIELDS) {
+        val minGrounded = when (raw.type) {
+            TargetType.MULTI -> MIN_GROUNDED_FIELDS_MULTI
+            TargetType.SINGLE -> MIN_GROUNDED_FIELDS_SINGLE
+        }
+        if (grounded.size < minGrounded) {
             log.warn(
-                "only {} grounded field(s) remain after dropping ungrounded values — skipping structure mapping for this layer",
-                grounded.size,
+                "only {} grounded field(s) remain after dropping ungrounded values (need {} for type={}) — skipping structure mapping for this layer",
+                grounded.size, minGrounded, raw.type,
             )
             return null
         }
@@ -370,6 +383,24 @@ class Orchestrator(
         return actions
     }
 
+    /**
+     * Collect field names captured on every prior layer (LISTING + earlier
+     * follow-ups). Used to tell the verifier which fields are already part of
+     * the runtime output, so it doesn't re-emit them on a new layer and force
+     * SelectorMapper to chase values that aren't there.
+     */
+    private fun priorFieldNames(job: Job): List<String> =
+        job.layers
+            .mapNotNull { it.targetJson }
+            .flatMap { json ->
+                runCatching { objectMapper.readValue(json, Target::class.java) }
+                    .getOrNull()
+                    ?.fields
+                    ?.map { it.name }
+                    ?: emptyList()
+            }
+            .distinct()
+
     private fun parseStructure(structureJson: String): ExtractedStructure? =
         runCatching { objectMapper.readValue(structureJson, ExtractedStructure::class.java) }
             .getOrNull()
@@ -384,8 +415,12 @@ class Orchestrator(
         const val MAX_PLAN_STEPS = 4
 
         // Minimum literally-grounded fields required before selector mapping
-        // runs. Below this, findRowContainerHtml has too little signal to
-        // lock onto the right container.
-        const val MIN_GROUNDED_FIELDS = 2
+        // runs. MULTI needs ≥2 because findRowContainerHtml intersects on
+        // text presence — one value can lock onto chrome that happens to
+        // contain it. SINGLE just looks up one value's container, so one
+        // field is enough and is in fact the common case (e.g. "give me
+        // the location from each detail page").
+        const val MIN_GROUNDED_FIELDS_MULTI = 2
+        const val MIN_GROUNDED_FIELDS_SINGLE = 1
     }
 }

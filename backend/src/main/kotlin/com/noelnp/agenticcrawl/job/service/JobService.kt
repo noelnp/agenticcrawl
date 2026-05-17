@@ -214,7 +214,7 @@ class JobService(
 
         val containerHtml = when (target.type) {
             TargetType.MULTI -> session.findRowContainerHtml(groundedValues)
-            TargetType.SINGLE -> groundedValues.firstOrNull()?.let { session.findSingleElementHtml(it) }
+            TargetType.SINGLE -> session.findSingleScopeHtml(groundedValues)
         }
         if (containerHtml.isNullOrBlank()) {
             log.warn("locator returned no element — no structure mapped")
@@ -228,13 +228,12 @@ class JobService(
             return MappingResult(containerHtml, null, null)
         }
 
-        val refined = if (target.type == TargetType.MULTI) {
-            refineAcrossRows(session, initial, containerHtml, target)
-        } else {
-            initial
+        val refined = when (target.type) {
+            TargetType.MULTI -> refineAcrossRows(session, initial, containerHtml, target)
+            TargetType.SINGLE -> verifySingleRowSelectorPageUnique(session, initial, containerHtml, target)
         }
         if (refined == null) {
-            log.warn("cross-row verification rejected the structure — recon will surface this layer without selectors")
+            log.warn("post-mapping verification rejected the structure — recon will surface this layer without selectors")
             return MappingResult(containerHtml, null, null)
         }
 
@@ -343,6 +342,101 @@ class JobService(
             return null
         }
         return current
+    }
+
+    /**
+     * SINGLE-target post-mapping check: the rowSelector picked by the LLM is
+     * only verified against the captured HTML, so a structurally valid pick
+     * can still match many elements (or none) on the live page. For a
+     * SINGLE-item view we need exactly one. On failure, compute which of
+     * the captured root's own identifiers ARE page-unique and feed them to
+     * SelectorMapper as a hint, then retry. Reject if no retry lands on a
+     * unique anchor.
+     */
+    private fun verifySingleRowSelectorPageUnique(
+        session: LiveSession,
+        initial: ExtractedStructure,
+        containerHtml: String,
+        target: Target,
+    ): ExtractedStructure? {
+        var current = initial
+        for (attempt in 0..SINGLE_UNIQUENESS_MAX_REFINEMENTS) {
+            val count = session.countSelectorMatches(current.rowSelector)
+            if (count == 1) {
+                if (attempt > 0) {
+                    log.info(
+                        "SINGLE rowSelector '{}' became page-unique after {} refinement(s)",
+                        current.rowSelector, attempt,
+                    )
+                }
+                return current
+            }
+            if (attempt == SINGLE_UNIQUENESS_MAX_REFINEMENTS) {
+                log.warn(
+                    "SINGLE rowSelector '{}' matched {} elements after {} refinement(s) — rejecting",
+                    current.rowSelector, count, attempt,
+                )
+                return null
+            }
+            val uniqueOptions = pageUniqueRootIdentifiers(session, containerHtml)
+            log.warn(
+                "SINGLE rowSelector '{}' matched {} elements on live page (need 1); refining with hints={}",
+                current.rowSelector, count, uniqueOptions,
+            )
+            val feedback = buildSingleUniquenessFeedback(current.rowSelector, count, uniqueOptions)
+            val refined = selectorMapper.map(
+                rowHtml = containerHtml,
+                fields = target.fields,
+                type = target.type,
+                externalFeedback = feedback,
+            ) ?: return null
+            if (refined.rowSelector == current.rowSelector) {
+                log.info("SINGLE refinement returned the same rowSelector — giving up")
+                return null
+            }
+            current = refined
+        }
+        return null
+    }
+
+    /**
+     * For the captured row root, collect each identifier on the root itself
+     * (id, classes, data-* attributes) that matches exactly one element on
+     * the current live page. These are the safe options for the
+     * SINGLE-item rowSelector.
+     */
+    private fun pageUniqueRootIdentifiers(session: LiveSession, rowHtml: String): List<String> {
+        val root = runCatching { Jsoup.parseBodyFragment(rowHtml).body().firstElementChild() }
+            .getOrNull() ?: return emptyList()
+        val candidates = buildList<String> {
+            root.id().takeIf { it.isNotBlank() }?.let { add("#$it") }
+            root.classNames().forEach { cls -> if (cls.isNotBlank()) add(".$cls") }
+            root.attributes().asList().forEach { attr ->
+                if (attr.key.startsWith("data-") && attr.value.isNotBlank()) {
+                    add("[${attr.key}='${attr.value}']")
+                }
+            }
+        }
+        if (candidates.isEmpty()) return emptyList()
+        val counts = session.selectorMatchCounts(candidates)
+        return candidates.filter { counts[it] == 1 }
+    }
+
+    private fun buildSingleUniquenessFeedback(
+        badSelector: String,
+        matchCount: Int,
+        uniqueOptions: List<String>,
+    ): String {
+        val header = "rowSelector '$badSelector' matched $matchCount elements on the FULL live page; " +
+            "a SINGLE-item view requires the rowSelector to match exactly ONE element."
+        return if (uniqueOptions.isEmpty()) {
+            "$header The captured root has no own class/id/data-* attribute that's page-unique. " +
+                "Pick something more specific — combine identifiers with a descendant combinator " +
+                "(e.g. 'parentAttr X'), or accept that no unique anchor exists in the captured scope."
+        } else {
+            "$header These identifiers on the captured root ARE page-unique — pick exactly one of them " +
+                "for rowSelector: ${uniqueOptions.joinToString(", ")}"
+        }
     }
 
     private data class CrossRowStats(
@@ -703,6 +797,7 @@ class JobService(
         const val CROSS_ROW_MAX_REFINEMENTS = 2
         const val WEAK_FIELD_THRESHOLD = 0.5
         const val CONTRAST_ROW_HTML_CHAR_CAP = 4_000
+        const val SINGLE_UNIQUENESS_MAX_REFINEMENTS = 2
         val WHITESPACE_REGEX = Regex("[\\p{Zs}\\s]+")
     }
 }
