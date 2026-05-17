@@ -1,4 +1,4 @@
-import type { Job } from "./types";
+import type { Job, LogEvent } from "./types";
 
 const BASE = import.meta.env.VITE_API_BASE_URL ?? "/api";
 
@@ -45,4 +45,22 @@ export async function runScript(id: string): Promise<Job> {
     throw new Error(`Failed to start script run (${res.status}): ${text}`);
   }
   return res.json();
+}
+
+export function openLogStream(
+  id: string,
+  onEvent: (event: LogEvent) => void,
+  onError?: (e: Event) => void,
+): () => void {
+  const source = new EventSource(`${BASE}/jobs/${id}/logs/stream`);
+  source.addEventListener("log", (msg) => {
+    try {
+      const data: LogEvent = JSON.parse((msg as MessageEvent).data);
+      onEvent(data);
+    } catch {
+      // ignore malformed events; the stream stays open
+    }
+  });
+  if (onError) source.onerror = onError;
+  return () => source.close();
 }

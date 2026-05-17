@@ -108,6 +108,16 @@ export interface ExtractionPlan {
   steps: ExtractionStep[];
 }
 
+export interface LogEvent {
+  jobId: string;
+  seq: number;
+  timestamp: string;
+  level: "TRACE" | "DEBUG" | "INFO" | "WARN" | "ERROR";
+  logger: string;
+  message: string;
+  throwable: string | null;
+}
+
 export interface Job {
   id: string;
   description: string;

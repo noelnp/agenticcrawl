@@ -71,6 +71,7 @@ agenticcrawl:
     accept-patterns:
       - "godkänn"
       - "acceptera"
+      - "tillåt"
       - "jag förstår"
       - "accept"
       - "allow"
