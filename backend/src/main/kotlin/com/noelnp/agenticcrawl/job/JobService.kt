@@ -2,10 +2,12 @@ package com.noelnp.agenticcrawl.job
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.noelnp.agenticcrawl.analysis.DetailLinkFinder
+import com.noelnp.agenticcrawl.analysis.ExtractedStructure
 import com.noelnp.agenticcrawl.analysis.PageAnalysis
 import com.noelnp.agenticcrawl.analysis.PageAnalyzer
 import com.noelnp.agenticcrawl.analysis.SelectorMapper
 import com.noelnp.agenticcrawl.analysis.Target
+import com.noelnp.agenticcrawl.analysis.TargetField
 import com.noelnp.agenticcrawl.analysis.TargetType
 import com.noelnp.agenticcrawl.analysis.ValidationVerdict
 import com.noelnp.agenticcrawl.browser.BrowserService
@@ -157,47 +159,13 @@ class JobService(
             val target = loadListingTarget(id)
                 ?: throw IllegalStateException("listing mapping invoked but no target stored on layer 0")
 
-            val groundedValues = target.fields.map { it.text }.filter { it.isNotBlank() }
-            log.debug("running locator over {} grounded values (type={})", groundedValues.size, target.type)
-
-            val containerHtml = when (target.type) {
-                TargetType.MULTI -> session.findRowContainerHtml(groundedValues)
-                TargetType.SINGLE -> groundedValues.firstOrNull()?.let { session.findSingleElementHtml(it) }
-            }
-            if (containerHtml.isNullOrBlank()) {
-                log.warn("locator returned no element — saving listing layer without containerHtml")
-            } else {
-                log.info("locator captured html chars={}", containerHtml.length)
-            }
-
-            val structure = containerHtml
-                ?.takeIf { it.isNotBlank() }
-                ?.let { html ->
-                    val base = selectorMapper.map(html, target.fields, target.type) ?: return@let null
-                    if (target.type == TargetType.MULTI) {
-                        val link = detailLinkFinder.find(html, target.fields)
-                        base.copy(detailLink = link)
-                    } else {
-                        base
-                    }
-                }
-            val structureJson = structure?.let { objectMapper.writeValueAsString(it) }
-            if (structure != null) {
-                log.info(
-                    "structure rowSelector='{}' fields={} detailLink={}",
-                    structure.rowSelector,
-                    structure.fields.joinToString { "${it.name}->${it.selector}" },
-                    structure.detailLink?.let { "${it.selector}${it.nth?.let { n -> " nth=$n" }.orEmpty()}" } ?: "none",
-                )
-            } else if (!containerHtml.isNullOrBlank()) {
-                log.warn("structure inference returned no result")
-            }
+            val mapping = mapTargetToStructure(session, target, includeDetailLink = true)
 
             jobMutator.mutate(id) { j ->
                 val layer = j.layers.firstOrNull { it.layerIndex == 0 }
                     ?: error("listing layer missing on job $id")
-                layer.containerHtml = containerHtml
-                layer.extractedStructureJson = structureJson
+                layer.containerHtml = mapping.containerHtml
+                layer.extractedStructureJson = mapping.structureJson
             }
 
             // Hand off to the orchestrator. It owns the planner loop and the
@@ -211,6 +179,64 @@ class JobService(
             if (!handedOff) runCatching { session.close() }
         }
     }
+
+    /**
+     * Run the selector-mapping pipeline against the live page for a verified
+     * [target]. Shared by the listing layer (where [includeDetailLink] is true
+     * so we also probe for per-row detail links) and by follow-up layers
+     * captured during the planner loop (where it's false — the orchestrator
+     * does not navigate further from inside a stat/spec row).
+     */
+    fun mapTargetToStructure(
+        session: LiveSession,
+        target: Target,
+        includeDetailLink: Boolean,
+    ): MappingResult {
+        val groundedValues = target.fields.map { it.text }.filter { it.isNotBlank() }
+        log.debug(
+            "running locator over {} grounded values (type={}, includeDetailLink={})",
+            groundedValues.size, target.type, includeDetailLink,
+        )
+
+        val containerHtml = when (target.type) {
+            TargetType.MULTI -> session.findRowContainerHtml(groundedValues)
+            TargetType.SINGLE -> groundedValues.firstOrNull()?.let { session.findSingleElementHtml(it) }
+        }
+        if (containerHtml.isNullOrBlank()) {
+            log.warn("locator returned no element — no structure mapped")
+            return MappingResult(null, null, null)
+        }
+        log.info("locator captured html chars={}", containerHtml.length)
+
+        val base = selectorMapper.map(containerHtml, target.fields, target.type)
+        if (base == null) {
+            log.warn("structure inference returned no result")
+            return MappingResult(containerHtml, null, null)
+        }
+
+        val structure = if (target.type == TargetType.MULTI && includeDetailLink) {
+            base.copy(detailLink = detailLinkFinder.find(containerHtml, target.fields))
+        } else {
+            base
+        }
+        log.info(
+            "structure rowSelector='{}' fields={} detailLink={}",
+            structure.rowSelector,
+            structure.fields.joinToString { "${it.name}->${it.selector}" },
+            structure.detailLink?.let { "${it.selector}${it.nth?.let { n -> " nth=$n" }.orEmpty()}" } ?: "none",
+        )
+        return MappingResult(
+            containerHtml = containerHtml,
+            structure = structure,
+            structureJson = objectMapper.writeValueAsString(structure),
+        )
+    }
+
+    data class MappingResult(
+        val containerHtml: String?,
+        val structure: ExtractedStructure?,
+        val structureJson: String?,
+    )
 
     private fun onSessionExpired(id: UUID) {
         withMdc(id) {
@@ -330,6 +356,8 @@ class JobService(
         layerKind: ReconLayerKind,
         screenshot: ByteArray,
         analysis: PageAnalysis,
+        containerHtml: String? = null,
+        structureJson: String? = null,
     ): Int {
         var newIndex = -1
         jobMutator.mutate(id) { j ->
@@ -344,10 +372,28 @@ class JobService(
             layer.validationVerdict = analysis.verdict
             layer.validationReasoning = analysis.reasoning
             layer.targetJson = analysis.target?.let { objectMapper.writeValueAsString(it) }
+            layer.containerHtml = containerHtml
+            layer.extractedStructureJson = structureJson
             j.layers.add(layer)
             newIndex = idx
         }
         return newIndex
+    }
+
+    /**
+     * Filter [fields] to only those whose [TargetField.text] literally appears in
+     * [visibleText] (whitespace-normalised, case-insensitive). Used as a safety
+     * net against vision-LLM hallucinations on follow-up layers — e.g. emitting
+     * an aggregated string like "A — B" that the page renders as two separate
+     * elements. Such values cannot be located in the DOM and would derail
+     * selector mapping, so we drop them before mapping runs.
+     */
+    fun groundFields(fields: List<TargetField>, visibleText: String): List<TargetField> {
+        val haystack = normalizeWhitespace(visibleText)
+        return fields.filter { f ->
+            val needle = normalizeWhitespace(f.text)
+            needle.isNotBlank() && haystack.contains(needle, ignoreCase = true)
+        }
     }
 
     private fun normalizeWhitespace(s: String): String =

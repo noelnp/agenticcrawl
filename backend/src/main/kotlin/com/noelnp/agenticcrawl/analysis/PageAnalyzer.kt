@@ -164,7 +164,7 @@ class PageAnalyzer(private val llm: LlmClient) {
               values they hold are *exactly* the kind of information the user
               asked for.
 
-            - Examples of the mistake to avoid:
+            - Examples of the conceptual mismatch to avoid:
                 * User asked for "match statistics" → you see a list of goal
                   events. Goal events are a different concept from statistics.
                   Return PARTIAL.
@@ -173,8 +173,6 @@ class PageAnalyzer(private val llm: LlmClient) {
                   Return PARTIAL.
                 * User asked for "user reviews" → you see news article comments,
                   or seller responses. Different concept. Return PARTIAL.
-                * User asked for "stock price history" → you see an article about
-                  the company. Different concept. Return PARTIAL.
 
             - Prefer PARTIAL with clear reasoning over PRESENT with shaky fields.
               PARTIAL gives the orchestrator a chance to drill deeper (click a
@@ -184,16 +182,67 @@ class PageAnalyzer(private val llm: LlmClient) {
               directly. A field that's merely "interesting" or "related" but
               doesn't answer the request is not appropriate — leave it out.
 
-            VALUE EXTRACTION (same as before):
+            HOW TO READ REPEATING STRUCTURES (type=MULTI):
+
+            The repeating unit is whatever element appears multiple times on the
+            page, similar to its neighbour instances. Identify ONE example
+            instance and emit row fields from it. Two row shapes you might see:
+
+              (a) Fixed-column rows — every row has the same conceptual columns
+                  whose meaning is the same across rows (e.g. a list where each
+                  row is "thing, attribute1, attribute2"). Use semantic camelCase
+                  field names that match the column meaning, consistent across
+                  what every row would also provide.
+
+              (b) Label-as-data rows — each row's own *label text* varies and
+                  itself identifies what the row is about; the row also carries
+                  one or more values that belong to that label. Common shapes:
+                  key-value entries, spec rows, settings rows, comparison rows
+                  with one or two value sides. Here the label IS one of the row
+                  fields — emit it. Use GENERIC field names that describe
+                  position, not meaning: `label` for the varying-text element,
+                  and `value` for a single value, or `home`/`away` (or
+                  `valueA`/`valueB`, whichever orientation matches what you
+                  see) for two values flanking a label.
+
+                  Do not invent semantic names from one row's label text — the
+                  label is data, not a column header, so different rows would
+                  carry different labels under the same `label` field.
+
+            ROW-FIELD DISCIPLINE (applies to every MULTI emission):
+
+            - A value qualifies as a row field only if it CHANGES between this
+              row and its immediate neighbour rows. Look at the rows above and
+              below: if both share the same value, that value belongs to a
+              section header or page chrome, not to this row — EXCLUDE it.
+
+            - Row fields must come from inside ONE instance of the repeating
+              unit. Do NOT mix in values from the page header, breadcrumbs,
+              page title, score/summary banner, tab bar, or any section-level
+              chrome that lives outside the repeating block.
+
+            - Each visible value is its OWN field. If two distinct values appear
+              side-by-side (e.g. a left value and a right value flanking a
+              label, before/after columns, two comparison sides), emit them as
+              TWO separate fields. NEVER combine two cell values into one field
+              with a visual separator — no `"A — B"`, `"A vs B"`, `"A / B"`,
+              `"A : B"` aggregations. The DOM stores them as separate text
+              nodes; combined strings exist only in the rendered layout.
+
+            VALUE EXTRACTION:
               - Only return text you can clearly read in the screenshot.
               - Do not invent or guess. Read the actual pixels.
+              - Copy each value EXACTLY as the single cell renders it — do not
+                concatenate with adjacent cells' values, do not add separators
+                that aren't part of the cell's own text.
               - Copy text exactly as displayed (capitalisation, accents,
                 punctuation, whitespace).
               - For purely numeric values, emit only digits and decimal/thousands
                 separators. Drop currency symbols, units, decorative typography.
               - Do not infer numeric values from charts, star bars, progress
                 meters. Text only.
-              - For MULTI, pick ONE specific visible row; do not aggregate.
+              - For MULTI, pick ONE specific visible row instance; do not
+                aggregate across rows.
 
             Return:
 

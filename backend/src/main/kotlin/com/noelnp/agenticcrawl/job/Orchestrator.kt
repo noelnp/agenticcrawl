@@ -3,8 +3,11 @@ package com.noelnp.agenticcrawl.job
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.noelnp.agenticcrawl.analysis.ClickTargetFinder
 import com.noelnp.agenticcrawl.analysis.ExtractedStructure
+import com.noelnp.agenticcrawl.analysis.PageAnalysis
 import com.noelnp.agenticcrawl.analysis.PageAnalyzer
 import com.noelnp.agenticcrawl.analysis.Planner
+import com.noelnp.agenticcrawl.analysis.Target
+import com.noelnp.agenticcrawl.analysis.ValidationVerdict
 import com.noelnp.agenticcrawl.browser.LiveSession
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
@@ -133,6 +136,7 @@ class Orchestrator(
             analysis.verdict, analysis.target?.fields?.size ?: 0,
         )
 
+        val mapping = mapIfPresent(session, capture.visibleText, analysis)
         val landedAt = session.currentUrl()
         val newIndex = jobService.appendLayer(
             id = jobId,
@@ -140,6 +144,8 @@ class Orchestrator(
             layerKind = ReconLayerKind.FOLLOWED_DETAIL_LINK,
             screenshot = capture.screenshot,
             analysis = analysis,
+            containerHtml = mapping?.containerHtml,
+            structureJson = mapping?.structureJson,
         )
 
         jobService.recordPlanStep(
@@ -147,7 +153,7 @@ class Orchestrator(
             action = PlanAction.NAVIGATE_VIA_DETAIL_LINK,
             reasoning = reasoning,
             outcome = PlanOutcome.SUCCESS,
-            detail = "layer $newIndex captured at $landedAt (verdict=${analysis.verdict})",
+            detail = layerDetail(newIndex, landedAt, analysis, mapping?.structure),
             actionDataJson = jsonOrNull(
                 mapOf(
                     "detailLinkSelector" to detailLink.selector,
@@ -242,6 +248,7 @@ class Orchestrator(
             analysis.verdict, analysis.target?.fields?.size ?: 0,
         )
 
+        val mapping = mapIfPresent(session, capture.visibleText, analysis)
         val landedAt = session.currentUrl()
         val newIndex = jobService.appendLayer(
             id = jobId,
@@ -249,6 +256,8 @@ class Orchestrator(
             layerKind = ReconLayerKind.REVEALED_BY_CLICK,
             screenshot = capture.screenshot,
             analysis = analysis,
+            containerHtml = mapping?.containerHtml,
+            structureJson = mapping?.structureJson,
         )
 
         jobService.recordPlanStep(
@@ -256,7 +265,9 @@ class Orchestrator(
             action = PlanAction.CLICK_TO_REVEAL,
             reasoning = reasoning,
             outcome = PlanOutcome.SUCCESS,
-            detail = "clicked selector='${target.selector}' → layer $newIndex at $landedAt (verdict=${analysis.verdict}, urlChanged=${click.urlChanged})",
+            detail = "clicked selector='${target.selector}' → " +
+                layerDetail(newIndex, landedAt, analysis, mapping?.structure) +
+                " urlChanged=${click.urlChanged}",
             actionDataJson = jsonOrNull(
                 mapOf(
                     "selector" to target.selector,
@@ -269,6 +280,55 @@ class Orchestrator(
             ),
         )
         return PlanOutcome.SUCCESS
+    }
+
+    private fun mapIfPresent(
+        session: LiveSession,
+        visibleText: String,
+        analysis: PageAnalysis,
+    ): JobService.MappingResult? {
+        if (analysis.verdict != ValidationVerdict.PRESENT) return null
+        val raw = analysis.target ?: return null
+
+        // Defence against verifier hallucinations: if a field's value isn't
+        // literally on the page (e.g. an aggregated "A — B" string the LLM
+        // synthesised from the rendered layout), no selector can return it.
+        // Drop those fields before mapping; if too few survive, skip mapping.
+        val grounded = jobService.groundFields(raw.fields, visibleText)
+        val dropped = raw.fields.size - grounded.size
+        if (dropped > 0) {
+            log.warn(
+                "dropping {} of {} verifier fields with no literal match on page: {}",
+                dropped, raw.fields.size,
+                raw.fields.filterNot { grounded.contains(it) }.joinToString { "${it.name}='${it.text.take(40)}'" },
+            )
+        }
+        if (grounded.size < MIN_GROUNDED_FIELDS) {
+            log.warn(
+                "only {} grounded field(s) remain after dropping ungrounded values — skipping structure mapping for this layer",
+                grounded.size,
+            )
+            return null
+        }
+
+        val groundedTarget = Target(type = raw.type, fields = grounded)
+        return runCatching {
+            jobService.mapTargetToStructure(session, groundedTarget, includeDetailLink = false)
+        }.onFailure { log.warn("follow-up structure mapping failed: {}", it.message) }.getOrNull()
+    }
+
+    private fun layerDetail(
+        layerIndex: Int,
+        landedAt: String,
+        analysis: PageAnalysis,
+        structure: ExtractedStructure?,
+    ): String {
+        val structurePart = when {
+            structure != null -> ", rowSelector='${structure.rowSelector}', fields=${structure.fields.size}"
+            analysis.verdict == ValidationVerdict.PRESENT -> ", no selectors mapped"
+            else -> ""
+        }
+        return "layer $layerIndex at $landedAt (verdict=${analysis.verdict}$structurePart)"
     }
 
     private fun failStep(
@@ -318,5 +378,10 @@ class Orchestrator(
 
     private companion object {
         const val MAX_PLAN_STEPS = 4
+
+        // A row needs at least this many literally-grounded fields for selector
+        // mapping to have any chance of locking onto a meaningful container.
+        // Below this we'd be feeding noise into findRowContainerHtml.
+        const val MIN_GROUNDED_FIELDS = 2
     }
 }
