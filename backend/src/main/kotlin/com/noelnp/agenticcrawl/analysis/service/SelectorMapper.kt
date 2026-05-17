@@ -17,14 +17,19 @@ class SelectorMapper(private val llm: LlmClient) {
 
     private val log = LoggerFactory.getLogger(javaClass)
 
-    fun map(rowHtml: String, fields: List<TargetField>, type: TargetType): ExtractedStructure? {
+    fun map(
+        rowHtml: String,
+        fields: List<TargetField>,
+        type: TargetType,
+        externalFeedback: String? = null,
+    ): ExtractedStructure? {
         if (rowHtml.isBlank() || fields.isEmpty()) return null
         val rowRoot = parseRowRoot(rowHtml) ?: run {
             log.warn("could not parse row HTML")
             return null
         }
 
-        var feedback: String? = null
+        var feedback: String? = externalFeedback
         var lastAttempt: ExtractedStructure? = null
         for (attempt in 0..MAX_RETRIES) {
             val structure = callLlm(rowHtml, fields, type, feedback)

@@ -182,6 +182,28 @@ class LiveSession internal constructor(
             .getOrNull()
     }
 
+    /**
+     * Fetch the outerHTML of up to [count] elements matching [rowSelector],
+     * skipping the first [skipFirst] (typically the example row recon already
+     * analysed). Used for cross-row selector verification — checking that a
+     * structure derived from one row also works on its peers.
+     */
+    fun sampleRowHtmls(rowSelector: String, count: Int, skipFirst: Int = 1): List<String> = onSessionThread {
+        val locator = page.locator(rowSelector)
+        val total = locator.count()
+        if (total <= skipFirst) return@onSessionThread emptyList()
+        val available = total - skipFirst
+        val toTake = minOf(count, available)
+        val collected = mutableListOf<String>()
+        for (i in 0 until toTake) {
+            val html = runCatching {
+                locator.nth(skipFirst + i).evaluate("el => el.outerHTML") as? String
+            }.getOrNull()
+            if (!html.isNullOrBlank()) collected += html
+        }
+        collected
+    }
+
     override fun close() {
         if (closed) return
         closed = true

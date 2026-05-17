@@ -3,6 +3,7 @@ package com.noelnp.agenticcrawl.job.service
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.noelnp.agenticcrawl.analysis.service.DetailLinkFinder
 import com.noelnp.agenticcrawl.analysis.model.ExtractedStructure
+import com.noelnp.agenticcrawl.analysis.model.FieldSelector
 import com.noelnp.agenticcrawl.analysis.model.PageAnalysis
 import com.noelnp.agenticcrawl.analysis.service.PageAnalyzer
 import com.noelnp.agenticcrawl.analysis.service.SelectorMapper
@@ -10,6 +11,7 @@ import com.noelnp.agenticcrawl.analysis.model.Target
 import com.noelnp.agenticcrawl.analysis.model.TargetField
 import com.noelnp.agenticcrawl.analysis.model.TargetType
 import com.noelnp.agenticcrawl.analysis.model.ValidationVerdict
+import com.noelnp.agenticcrawl.analysis.model.ValueSource
 import com.noelnp.agenticcrawl.browser.service.BrowserService
 import com.noelnp.agenticcrawl.browser.session.BrowserSessionManager
 import com.noelnp.agenticcrawl.browser.session.LiveSession
@@ -23,6 +25,8 @@ import com.noelnp.agenticcrawl.job.domain.PlanStep
 import com.noelnp.agenticcrawl.job.domain.ReconLayer
 import com.noelnp.agenticcrawl.job.domain.ReconLayerKind
 import com.noelnp.agenticcrawl.job.repository.JobRepository
+import org.jsoup.Jsoup
+import org.jsoup.nodes.Element
 import org.slf4j.LoggerFactory
 import org.slf4j.MDC
 import org.springframework.context.annotation.Lazy
@@ -218,16 +222,26 @@ class JobService(
         }
         log.info("locator captured html chars={}", containerHtml.length)
 
-        val base = selectorMapper.map(containerHtml, target.fields, target.type)
-        if (base == null) {
+        val initial = selectorMapper.map(containerHtml, target.fields, target.type)
+        if (initial == null) {
             log.warn("structure inference returned no result")
             return MappingResult(containerHtml, null, null)
         }
 
-        val structure = if (target.type == TargetType.MULTI && includeDetailLink) {
-            base.copy(detailLink = detailLinkFinder.find(containerHtml, target.fields))
+        val refined = if (target.type == TargetType.MULTI) {
+            refineAcrossRows(session, initial, containerHtml, target)
         } else {
-            base
+            initial
+        }
+        if (refined == null) {
+            log.warn("cross-row verification rejected the structure — recon will surface this layer without selectors")
+            return MappingResult(containerHtml, null, null)
+        }
+
+        val structure = if (target.type == TargetType.MULTI && includeDetailLink) {
+            refined.copy(detailLink = detailLinkFinder.find(containerHtml, target.fields))
+        } else {
+            refined
         }
         log.info(
             "structure rowSelector='{}' fields={} detailLink={}",
@@ -247,6 +261,266 @@ class JobService(
         val structure: ExtractedStructure?,
         val structureJson: String?,
     )
+
+    /**
+     * Sample several sibling rows on the live page and check how each field's
+     * selector behaves there. A selector is healthy on a row when it resolves
+     * to a non-empty leaf AND that leaf is not also the resolved leaf of some
+     * other field — when two fields point at the same DOM node, one of them
+     * is using a class/attribute that's conditionally shared by both leaves
+     * on this row variant (a common failure mode with utility/styling-based
+     * class names whose presence depends on the row's data). If anything's
+     * weak, ask [selectorMapper] to refine with feedback about the specific
+     * failure and a contrasting row's HTML. Returns the best structure we
+     * landed on, even if refinement didn't fully close the gap.
+     */
+    private fun refineAcrossRows(
+        session: LiveSession,
+        initial: ExtractedStructure,
+        primaryRowHtml: String,
+        target: Target,
+    ): ExtractedStructure? {
+        val samples = session.sampleRowHtmls(
+            rowSelector = initial.rowSelector,
+            count = CROSS_ROW_SAMPLE_SIZE,
+            skipFirst = 1,
+        )
+        if (samples.isEmpty()) {
+            log.debug("cross-row verification: no additional rows available, skipping")
+            return initial
+        }
+
+        var current = initial
+        for (attempt in 0 until CROSS_ROW_MAX_REFINEMENTS) {
+            val stats = computeCrossRowStats(current.fields, samples)
+            logCrossRowStats(attempt, samples.size, stats)
+            val weakFields = stats.hitRates.filter { it.value < WEAK_FIELD_THRESHOLD }
+            if (weakFields.isEmpty() && stats.collisions.isEmpty()) break
+
+            val contrastRow = pickContrastRow(samples, current.fields, weakFields, stats.collisions)
+            if (contrastRow != null) {
+                log.info(
+                    "providing contrast row HTML to LLM ({} chars){}",
+                    contrastRow.length,
+                    if (stats.collisions.isNotEmpty()) " — row exposes a selector collision" else "",
+                )
+            } else {
+                log.info("no contrast row available — refining with selector feedback only")
+            }
+
+            val problemFields = (weakFields.keys + stats.collisions.flatMap { listOf(it.fieldA, it.fieldB) }).toSet()
+            log.warn("cross-row problems on fields: {} — asking LLM to refine", problemFields)
+
+            val feedback = buildCrossRowFeedback(current.fields, weakFields, stats.collisions, contrastRow)
+            val refined = selectorMapper.map(
+                rowHtml = primaryRowHtml,
+                fields = target.fields,
+                type = target.type,
+                externalFeedback = feedback,
+            ) ?: break
+            if (refined.fields.map { it.selector to it.nth } == current.fields.map { it.selector to it.nth }) {
+                log.info("refinement returned identical selectors — accepting current structure")
+                current = refined
+                break
+            }
+            current = refined
+        }
+
+        // Final sanity gate. If half or more of the fields hit 0% across all
+        // sampled rows, the rowSelector is matching the wrong elements
+        // entirely (either UI chrome, or the row container plus children).
+        // Persisting that produces garbage data at runtime (the user sees
+        // filter labels and section headers shown as products) so reject the
+        // structure outright and let the caller signal a recon failure.
+        val finalStats = computeCrossRowStats(current.fields, samples)
+        val zeroHitFields = finalStats.hitRates.filterValues { it == 0.0 }
+        val halfOrMore = current.fields.size > 0 && zeroHitFields.size >= (current.fields.size + 1) / 2
+        if (halfOrMore) {
+            log.warn(
+                "rejecting structure: {} of {} fields had 0% cross-row hit rate ({}) — rowSelector likely matches non-row elements",
+                zeroHitFields.size, current.fields.size, zeroHitFields.keys,
+            )
+            return null
+        }
+        return current
+    }
+
+    private data class CrossRowStats(
+        val hitRates: Map<String, Double>,
+        val collisions: List<CollisionPair>,
+    )
+
+    private data class CollisionPair(
+        val fieldA: String,
+        val fieldB: String,
+        val rowCount: Int,
+    )
+
+    /**
+     * Per-field hit rate across [sampleRowHtmls] plus the pairs of fields whose
+     * selectors resolve to the same DOM element on at least one sampled row.
+     * A field counts as "hit" on a row only when (a) its selector resolves to
+     * a non-empty leaf and (b) that leaf is unique to this field on that row.
+     * Element identity is referential (Jsoup's [Element] defines equals as
+     * identity, so the same node appears as the same instance in select()).
+     */
+    private fun computeCrossRowStats(
+        fields: List<FieldSelector>,
+        sampleRowHtmls: List<String>,
+    ): CrossRowStats {
+        val hits = mutableMapOf<String, Int>().apply { fields.forEach { put(it.name, 0) } }
+        val collisionCounts = mutableMapOf<Pair<String, String>, Int>()
+        val fieldOrder = fields.map { it.name }
+
+        for (html in sampleRowHtmls) {
+            val resolved = fields.associate { it.name to resolveFieldElement(html, it) }
+            val grouped = mutableMapOf<Element, MutableList<String>>()
+            for ((name, el) in resolved) {
+                if (el != null) grouped.getOrPut(el) { mutableListOf() }.add(name)
+            }
+            val collidingNames = grouped.values.asSequence()
+                .filter { it.size > 1 }
+                .flatten()
+                .toSet()
+            for (group in grouped.values) {
+                if (group.size < 2) continue
+                val ordered = fieldOrder.filter { it in group }
+                for (i in ordered.indices) for (j in i + 1 until ordered.size) {
+                    val key = ordered[i] to ordered[j]
+                    collisionCounts.merge(key, 1, Int::plus)
+                }
+            }
+            for ((name, el) in resolved) {
+                if (el != null && name !in collidingNames) {
+                    hits[name] = (hits[name] ?: 0) + 1
+                }
+            }
+        }
+
+        val total = sampleRowHtmls.size.toDouble()
+        val hitRates = hits.mapValues { it.value / total }
+        val collisions = collisionCounts.entries
+            .map { (pair, count) -> CollisionPair(pair.first, pair.second, count) }
+            .sortedByDescending { it.rowCount }
+        return CrossRowStats(hitRates, collisions)
+    }
+
+    /**
+     * Resolve the leaf that [field]'s selector (with its nth and source) would
+     * extract from [rowHtml], or null if the selector matches nothing useful
+     * (no elements, out-of-range nth, or an empty value at the resolved leaf).
+     */
+    private fun resolveFieldElement(rowHtml: String, field: FieldSelector): Element? {
+        val root = runCatching { Jsoup.parseBodyFragment(rowHtml).body().firstElementChild() }
+            .getOrNull() ?: return null
+        val matches = runCatching { root.select(field.selector) }.getOrNull().orEmpty()
+            .asSequence().filter { it !== root }.toList()
+        val element = when (val n = field.nth) {
+            null -> matches.firstOrNull()
+            else -> matches.getOrNull(n)
+        } ?: return null
+        val hasValue = when (val src = field.source) {
+            ValueSource.Text -> element.text().trim().isNotEmpty()
+            is ValueSource.Attribute -> element.attr(src.name).isNotBlank()
+        }
+        return if (hasValue) element else null
+    }
+
+    /**
+     * Pick one peer-row HTML to show the LLM during refinement. Prefer a row
+     * that triggers an element collision (those are the rows that prove the
+     * current selector pair is non-distinguishing). Otherwise fall back to a
+     * row where the weakest-hit field returned nothing.
+     */
+    private fun pickContrastRow(
+        samples: List<String>,
+        fields: List<FieldSelector>,
+        weakFields: Map<String, Double>,
+        collisions: List<CollisionPair>,
+    ): String? {
+        if (collisions.isNotEmpty()) {
+            val collidingNames = collisions.flatMap { listOf(it.fieldA, it.fieldB) }.toSet()
+            val row = samples.firstOrNull { html ->
+                val resolved = fields.associate { it.name to resolveFieldElement(html, it) }
+                val grouped = mutableMapOf<Element, MutableList<String>>()
+                for ((name, el) in resolved) {
+                    if (el != null) grouped.getOrPut(el) { mutableListOf() }.add(name)
+                }
+                grouped.values.any { g -> g.size > 1 && g.any { it in collidingNames } }
+            }
+            if (row != null) return row
+        }
+        val weakestName = weakFields.minByOrNull { it.value }?.key ?: return null
+        val weakest = fields.firstOrNull { it.name == weakestName } ?: return null
+        return samples.firstOrNull { resolveFieldElement(it, weakest) == null }
+    }
+
+    private fun logCrossRowStats(attempt: Int, sampleSize: Int, stats: CrossRowStats) {
+        val hits = stats.hitRates.entries.joinToString { (n, r) -> "$n=${(r * 100).toInt()}%" }
+        if (stats.collisions.isEmpty()) {
+            log.info(
+                "cross-row verification (attempt {}): sampled={} hits={}",
+                attempt + 1, sampleSize, hits,
+            )
+        } else {
+            val collisionLog = stats.collisions.joinToString {
+                "${it.fieldA}<->${it.fieldB}=${it.rowCount}/$sampleSize"
+            }
+            log.info(
+                "cross-row verification (attempt {}): sampled={} hits={} collisions={}",
+                attempt + 1, sampleSize, hits, collisionLog,
+            )
+        }
+    }
+
+    private fun buildCrossRowFeedback(
+        currentFields: List<FieldSelector>,
+        weakFields: Map<String, Double>,
+        collisions: List<CollisionPair>,
+        contrastRowHtml: String?,
+    ): String {
+        val byName = currentFields.associateBy { it.name }
+        val sections = mutableListOf<String>()
+
+        if (collisions.isNotEmpty()) {
+            val lines = collisions.map { c ->
+                val a = byName[c.fieldA]
+                val b = byName[c.fieldB]
+                val aDesc = "'${c.fieldA}' (selector '${a?.selector ?: "?"}'${a?.nth?.let { " nth=$it" }.orEmpty()})"
+                val bDesc = "'${c.fieldB}' (selector '${b?.selector ?: "?"}'${b?.nth?.let { " nth=$it" }.orEmpty()})"
+                "- $aDesc and $bDesc resolved to the SAME DOM element on ${c.rowCount} of the sampled peer rows. " +
+                    "When two field selectors land on the same node, at least one of them is using a class or " +
+                    "attribute that's conditionally shared between both fields' leaves on some row variant. " +
+                    "Replace both with selectors that name each leaf's permanent role, not a styling/utility " +
+                    "class whose presence depends on the row's data."
+            }
+            sections += "Selector collisions across peer rows (these must be eliminated):\n" + lines.joinToString("\n")
+        }
+
+        if (weakFields.isNotEmpty()) {
+            val lines = weakFields.entries.map { (name, rate) ->
+                val pct = (rate * 100).toInt()
+                val current = byName[name]
+                val nthClause = current?.nth?.let { " (nth=$it)" }.orEmpty()
+                val sel = current?.selector ?: "?"
+                "- field '$name': selector '$sel'$nthClause was usable on only $pct% of sampled sibling rows. " +
+                    "The selector either misses on standard rows, or collides with another field's leaf on them. " +
+                    "Pick a selector that targets the same logical leaf on every row variant."
+            }
+            sections += "Fields with weak cross-row hit rate:\n" + lines.joinToString("\n")
+        }
+
+        val contrastBlock = contrastRowHtml?.let { html ->
+            val trimmed = html.take(CONTRAST_ROW_HTML_CHAR_CAP)
+            "\n\nHere is the outerHTML of a sibling row that exposes the problem above. Compare its DOM " +
+                "shape and class set with the row you mapped against — pay attention to whether the same " +
+                "class names appear on DIFFERENT elements between the two rows — and choose selectors that " +
+                "work on BOTH variants:\n```\n$trimmed\n```"
+        }.orEmpty()
+
+        return sections.joinToString("\n\n") + contrastBlock +
+            "\n\nReturn a structure whose selectors hit every standard row and never resolve two fields to the same element."
+    }
 
     private fun onSessionExpired(id: UUID) {
         withMdc(id) {
@@ -425,6 +699,10 @@ class JobService(
     private companion object {
         const val GROUNDEDNESS_MIN_MATCHES = 2
         const val CONFIRMATION_TTL_SECONDS = 180L
+        const val CROSS_ROW_SAMPLE_SIZE = 5
+        const val CROSS_ROW_MAX_REFINEMENTS = 2
+        const val WEAK_FIELD_THRESHOLD = 0.5
+        const val CONTRAST_ROW_HTML_CHAR_CAP = 4_000
         val WHITESPACE_REGEX = Regex("[\\p{Zs}\\s]+")
     }
 }

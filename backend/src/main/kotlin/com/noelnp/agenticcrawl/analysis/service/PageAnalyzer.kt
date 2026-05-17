@@ -60,6 +60,16 @@ class PageAnalyzer(private val llm: LlmClient) {
                 if both share the same value, that value is NOT row-level; it
                 belongs to a section/header above the rows. EXCLUDE it.
 
+                EXAMPLE-ROW SELECTION when rows are heterogeneous: if the
+                listing shows BOTH decorated rows (sale badges, "sponsored"
+                markers, "out of stock" overlays, "new" tags, ribbons) AND
+                plain rows of the same item kind, pick a PLAIN row as your
+                example. Selectors derived from a decorated row are often
+                specific to the decoration variant (e.g. a sale-only price
+                class) and will not generalise to plain rows. The plain row
+                is the canonical shape; decorations are optional overlays
+                a runtime scraper can still pick up if they exist.
+
                 Common exclusions (NOT row fields, even when visually near a
                 row):
                   - Section / group / category headers shared by many rows
